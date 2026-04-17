@@ -16,6 +16,7 @@ impl std::cmp::PartialEq for User {
 }
 impl std::cmp::Eq for User {}
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
