@@ -1,6 +1,6 @@
 pub struct User {
-    user_id: String,
-    send: Box<dyn Fn(&[u8])>,
+    pub user_id: String,
+    pub send: Box<dyn Fn(&[u8])>,
 }
 
 impl std::fmt::Debug for User {
