@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 trait BinaryTree {
     type Node;
-    fn add_node(&mut self, node: Node) -> u64;
-    fn merge_nodes(&mut self, node_to_delete: &Node);
+    fn add_node(&mut self, node:  Node) -> u64;
+    fn merge_nodes(&mut self, node_to_delete: Node);
     fn get_right_child(&self, node: &Node) -> &Option<Node>;
     fn get_left_child(&self, node: &Node) -> &Option<Node>;
     fn get_parent(&self, node: &Node) -> &Option<Node>;
@@ -130,7 +130,10 @@ impl BinaryTree for Tree {
         }
     }
 
-    fn merge_nodes(&mut self, node_to_delete: &Node) {}
+    fn merge_nodes(&mut self,mut node_to_delete:  Node) {
+
+        
+    }
 
     fn get_left_child(&self, node: &Node) -> &Option<Node> {
         if self.array.len() as u64 >= 2 * node.id {
@@ -197,5 +200,24 @@ mod tests {
         };
         a.add_node(node2);
         println!("{}", a);
+    }
+
+    #[test]
+    fn test_medium_tree() {
+        let mut a = Tree {
+            array: Vec::new(),
+            depth: HashMap::new(),
+        };
+        for i in 1..16 {
+            let node = Node {
+            depth: 0,
+            id: 5,
+            key: vec![1; 8],
+            key_id: i,
+            user: None,
+        };
+        a.add_node(node);
+        print!("{}",a);
+        }
     }
 }
