@@ -3,18 +3,21 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 trait BinaryTree {
     type Node;
-    fn add_node(&mut self, node:  Node) -> u64;
-    fn merge_nodes(&mut self, node_to_delete: Node);
+    // Ownership of right_node will be transfered to the tree
+    // Return the node_id of the new node
+    fn add_node(&mut self, node: Node) -> usize;
+    fn merge_nodes(&mut self, node_id_to_delete: usize) -> usize;
     fn get_right_child(&self, node: &Node) -> &Option<Node>;
     fn get_left_child(&self, node: &Node) -> &Option<Node>;
     fn get_parent(&self, node: &Node) -> &Option<Node>;
+    fn get_node_by_id(&self, node_id: usize) -> &Option<Node>;
     fn get_root(&self) -> Option<&Node>;
 }
 #[derive(Debug)]
 struct Tree {
     //root: Option<Node>,
     //nodes: HashMap<u64, &'a Node>, //Association between nodeID and node
-    depth: HashMap<u64, Vec<u64>>, //Association between depth (0 being root) and the set of leaves at that depth
+    depth: HashMap<u64, HashSet<usize>>, //Association between depth (0 being root) and the set of leaves at that depth
     //users: HashMap<String, Vec<u64>>,  //Association between userID and node
     array: Vec<Option<Node>>,
 }
@@ -27,7 +30,7 @@ impl fmt::Display for Tree {
         }
 
         writeln!(f, "Binary Tree:")?;
-        
+
         // Start recursion from the root (ID 1, Index 0)
         self.format_node(f, 1, 0)
     }
@@ -42,7 +45,14 @@ impl Tree {
         match self.array.get(index).and_then(|slot| slot.as_ref()) {
             Some(node) => {
                 // 2. Print the current node with indentation
-                writeln!(f, "{:indent$}- [ID: {}] {}", "", id, node, indent = indent * 4)?;
+                writeln!(
+                    f,
+                    "{:indent$}- [ID: {}] {}",
+                    "",
+                    id,
+                    node,
+                    indent = indent * 4
+                )?;
 
                 // 3. Calculate child IDs
                 let left_id = 2 * id;
@@ -67,7 +77,7 @@ impl Tree {
 impl BinaryTree for Tree {
     type Node = Node;
 
-    fn add_node(&mut self, mut right_node: Node) -> u64 {
+    fn add_node(&mut self, mut right_node: Node) -> usize {
         let min_depth = self
             .depth
             .iter()
@@ -77,12 +87,16 @@ impl BinaryTree for Tree {
             .copied(); //Get _a_ leaf with the smallest depth
         match min_depth {
             Some(target_depth) => {
-                let target_node_id = self
+                let target_depth_set = self
                     .depth
                     .get_mut(&target_depth)
-                    .expect("Target depth unavailable")
-                    .pop()
+                    .expect("Target depth unavailable");
+                let target_node_id = *target_depth_set
+                    .iter()
+                    .next()
                     .expect("Depth unexpectedly empty");
+
+                target_depth_set.take(&target_node_id);
 
                 if self.array.len() < (2 * target_node_id + 1) as usize {
                     self.array.resize((2 * target_node_id + 1) as usize, None);
@@ -97,46 +111,100 @@ impl BinaryTree for Tree {
 
                 let mut left_node = target_node.clone();
                 left_node.id = 2 * target_node_id;
-                right_node.id = 2 * target_node_id+1;
+                right_node.id = 2 * target_node_id + 1;
                 left_node.depth = target_node.depth + 1;
                 right_node.depth = target_node.depth + 1;
 
                 let new_depth = self.depth.get_mut(&(target_depth + 1));
                 match new_depth {
                     None => {
-                        let depth_set = vec![left_node.id, right_node.id];
+                        //let depth_set = vec![left_node.id, right_node.id];
+                        let depth_set = HashSet::from([left_node.id, right_node.id]);
                         self.depth.insert(target_depth + 1, depth_set);
                     }
                     Some(depth_set) => {
-                        depth_set.push(left_node.id);
-                        depth_set.push(right_node.id);
+                        depth_set.insert(left_node.id);
+                        depth_set.insert(right_node.id);
                     }
                 }
-                let l_id= (left_node.id-1) as usize;
-                let r_id =(right_node.id-1) as usize;
+                let l_id = (left_node.id - 1) as usize;
+                let r_id = (right_node.id - 1) as usize;
                 self.array[l_id] = Some(left_node);
                 self.array[r_id] = Some(right_node);
 
-                target_node_id
+                r_id+1
             }
             None => {
                 //In this case, the tree is empty
                 right_node.id = 1;
                 right_node.depth = 0;
                 self.array.push(Some(right_node));
-                self.depth.insert(0, vec![1]);
+                //self.depth.insert(0, vec![1]);
+                self.depth.insert(0, HashSet::from([1]));
                 return 1;
             }
         }
     }
 
-    fn merge_nodes(&mut self,mut node_to_delete:  Node) {
+    fn merge_nodes(&mut self, node_id_to_delete: usize) -> usize {
+        // Objective : delete node_to_delete and merge it's brother in the parent
+        if node_id_to_delete <= 1 {
+            //Then node_to_delete is root
+            self.array.drain(..);
+            self.depth.drain();
+            return 0;
+        }
+        if node_id_to_delete > self.array.len() {
+            return 0;
+        }
 
-        
+        let node_to_delete = self.array[node_id_to_delete - 1]
+            .take()
+            .expect("Trying to delete non-existing node");
+        let mut brother = self.array[(node_id_to_delete ^ 1) -1]
+            .take()
+            .expect("Not root and no brother");
+        let parent = self
+            .array
+            .get_mut(node_id_to_delete / 2 - 1)
+            .expect("Invalid Parent ID")
+            .as_mut()
+            .expect("Orphaned node trying to merge");
+        let old_depth = self
+            .depth
+            .get_mut(&node_to_delete.depth)
+            .expect("Merged node is not a leaf");
+        old_depth.remove(&brother.id);
+        old_depth.remove(&node_to_delete.id);
+
+        let new_depth = self.depth.get_mut(&parent.depth);
+        match new_depth {
+            None => {
+                let layer = HashSet::from([parent.id]);
+                self.depth.insert(parent.depth, layer);
+            }
+            Some(layer) => {
+                layer.insert(parent.id);
+            }
+        };
+        //Still need to update the childrens of brother to reflect the correct depth
+        brother.id = parent.id;
+        let return_id = parent.id;
+        brother.depth = parent.depth;
+        self.array[return_id-1] = Some(brother);
+
+        return_id
     }
 
+    fn get_node_by_id(&self, node_id: usize) -> &Option<Node> {
+        if (node_id - 1) > self.array.len() {
+            return &None;
+        }
+
+        return &self.array[(node_id - 1) as usize];
+    }
     fn get_left_child(&self, node: &Node) -> &Option<Node> {
-        if self.array.len() as u64 >= 2 * node.id {
+        if self.array.len() >= 2 * node.id {
             &self.array[(2 * node.id - 1) as usize]
         } else {
             &None
@@ -144,7 +212,7 @@ impl BinaryTree for Tree {
     }
 
     fn get_right_child(&self, node: &Node) -> &Option<Node> {
-        if self.array.len() as u64 >= 2 * node.id + 1 {
+        if self.array.len() >= 2 * node.id + 1 {
             &self.array[(2 * node.id) as usize]
         } else {
             &None
@@ -153,7 +221,7 @@ impl BinaryTree for Tree {
 
     fn get_parent(&self, node: &Node) -> &Option<Node> {
         // Implementation to get the parent of a node
-        if self.array.len() as u64 >= node.id / 2 {
+        if self.array.len() >= node.id / 2 {
             &self.array[(node.id / 2 - 1) as usize]
         } else {
             &None
@@ -210,14 +278,68 @@ mod tests {
         };
         for i in 1..16 {
             let node = Node {
+                depth: 0,
+                id: 5,
+                key: vec![1; 8],
+                key_id: i,
+                user: None,
+            };
+            a.add_node(node);
+            print!("{}", a);
+        }
+    }
+    #[test]
+    fn test_destroy_root() {
+        let mut a = Tree {
+            array: Vec::new(),
+            depth: HashMap::new(),
+        };
+        let node = Node {
             depth: 0,
             id: 5,
             key: vec![1; 8],
-            key_id: i,
+            key_id: 0,
             user: None,
         };
-        a.add_node(node);
-        print!("{}",a);
+
+        let id = a.add_node(node);
+        println!("{}", a);
+        a.merge_nodes(id);
+        println!("{}", a);
+    }
+
+    #[test]
+    fn test_remove_one_node() {
+        let mut a = Tree {
+            array: Vec::new(),
+            depth: HashMap::new(),
+        };
+
+        let node = Node {
+            depth: 0,
+            id: 5,
+            key: vec![1; 8],
+            key_id: 0,
+            user: None,
+        };
+
+        let mut index = a.add_node(node);
+        println!("{}", a);
+        a.merge_nodes(index);
+        println!("{}", a);
+        for i in 1..4 {
+            let node = Node {
+                depth: 0,
+                id: 5,
+                key: vec![i; 8],
+                key_id: i as u64,
+                user: None,
+            };
+            index= a.add_node(node);
+            println!("Adding {} :\n {}",index,a)
         }
+        println!("Before removal of {}:\n{}",index, a);
+        a.merge_nodes(index-1);
+        println!("After Removal :\n{}", a);
     }
 }
