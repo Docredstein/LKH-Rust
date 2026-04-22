@@ -23,7 +23,7 @@ impl std::clone::Clone for Node {
 }
 impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Node of key [{}]=>{:x?} : ",self.key_id,self.key);
+        let _ = write!(f, "Node of key [{}]=>{:x?} : ",self.key_id,self.key);
         match &self.user  {
             None =>     write!(f,"None"),
             Some(user) => write!(f, "{},", user.user_id)

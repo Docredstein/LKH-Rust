@@ -1,7 +1,7 @@
 use crate::node::Node;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-trait BinaryTree {
+pub trait BinaryTree {
     type Node;
     // Ownership of right_node will be transfered to the tree
     // Return the node_id of the new node
@@ -14,11 +14,11 @@ trait BinaryTree {
     fn get_root(&self) -> Option<&Node>;
 }
 #[derive(Debug)]
-struct Tree {
+pub struct Tree {
     //root: Option<Node>,
     //nodes: HashMap<u64, &'a Node>, //Association between nodeID and node
     depth: HashMap<u64, HashSet<usize>>, //Association between depth (0 being root) and the set of leaves at that depth
-    //users: HashMap<String, Vec<u64>>,  //Association between userID and node
+    users: HashMap<String, Vec<usize>>, //Association between userID and node, not ideal, should be in LKH
     array: Vec<Option<Node>>,
 }
 //Gemini
@@ -37,6 +37,13 @@ impl fmt::Display for Tree {
 }
 
 impl Tree {
+    pub fn new() -> Self {
+        Tree {
+            users: HashMap::new(),
+            array: Vec::new(),
+            depth: HashMap::new(),
+        }
+    }
     // Helper function to handle indentation and child lookups
     fn format_node(&self, f: &mut fmt::Formatter, id: u64, indent: usize) -> fmt::Result {
         let index = (id - 1) as usize;
@@ -160,6 +167,19 @@ impl BinaryTree for Tree {
                 right_node.depth = target_node.depth + 1;
 
                 let new_depth = self.depth.get_mut(&(target_depth + 1));
+                match &left_node.user {
+                    None => {}
+                    Some(user) => {
+                        self.users.insert(user.user_id.clone(), vec![left_node.id]);
+                    }
+                }
+                match &right_node.user {
+                    None => {}
+                    Some(user) => {
+                        self.users.insert(user.user_id.clone(), vec![left_node.id]);
+                    }
+                }
+
                 match new_depth {
                     None => {
                         //let depth_set = vec![left_node.id, right_node.id];
@@ -173,6 +193,7 @@ impl BinaryTree for Tree {
                 }
                 let l_id = (left_node.id - 1) as usize;
                 let r_id = (right_node.id - 1) as usize;
+
                 self.array[l_id] = Some(left_node);
                 self.array[r_id] = Some(right_node);
 
@@ -182,8 +203,15 @@ impl BinaryTree for Tree {
                 //In this case, the tree is empty
                 right_node.id = 1;
                 right_node.depth = 0;
-                self.array.push(Some(right_node));
+
                 //self.depth.insert(0, vec![1]);
+                match right_node.user.as_ref() {
+                    None => {}
+                    Some(user) => {
+                        self.users.insert(user.user_id.clone(), vec![1]);
+                    }
+                }
+                self.array.push(Some(right_node));
                 self.depth.insert(0, HashSet::from([1]));
                 return 1;
             }
@@ -290,11 +318,7 @@ mod tests {
 
     #[test]
     fn test_creation() {
-        let mut a = Tree {
-            array: Vec::new(),
-            depth: HashMap::new(),
-        };
-
+        let mut a = Tree::new();
         println!("{:?}", a.get_root());
         let node = Node {
             depth: 0,
@@ -318,10 +342,7 @@ mod tests {
 
     #[test]
     fn test_medium_tree() {
-        let mut a = Tree {
-            array: Vec::new(),
-            depth: HashMap::new(),
-        };
+        let mut a = Tree::new();
         for i in 1..16 {
             let node = Node {
                 depth: 0,
@@ -336,10 +357,7 @@ mod tests {
     }
     #[test]
     fn test_destroy_root() {
-        let mut a = Tree {
-            array: Vec::new(),
-            depth: HashMap::new(),
-        };
+        let mut a = Tree::new();
         let node = Node {
             depth: 0,
             id: 5,
@@ -356,10 +374,7 @@ mod tests {
 
     #[test]
     fn test_remove_one_node() {
-        let mut a = Tree {
-            array: Vec::new(),
-            depth: HashMap::new(),
-        };
+        let mut a = Tree::new();
 
         let node = Node {
             depth: 0,
@@ -391,10 +406,7 @@ mod tests {
 
     #[test]
     fn test_add_then_delete() {
-        let mut a = Tree {
-            array: Vec::new(),
-            depth: HashMap::new(),
-        };
+        let mut a = Tree::new();
 
         for i in 0..32 {
             let node = Node {
@@ -406,7 +418,7 @@ mod tests {
             };
             a.add_node(node);
         }
-        while true {
+        loop {
             let max_depth = a
                 .depth
                 .iter()
@@ -414,22 +426,21 @@ mod tests {
                 .map(|(k, _)| k)
                 .max()
                 .copied();
-            match max_depth{
-                None => break, 
-                Some(max_depth) =>  {
+            match max_depth {
+                None => break,
+                Some(max_depth) => {
                     let target_depth_set = a
-                .depth
-                .get_mut(&max_depth)
-                .expect("Target depth unavailable");
-            let target_node_id = *target_depth_set
-                .iter()
-                .next()
-                .expect("Depth unexpectedly empty");
-            a.merge_nodes(target_node_id);
-            println!("Removing {}:\n{}", target_node_id, a)
+                        .depth
+                        .get_mut(&max_depth)
+                        .expect("Target depth unavailable");
+                    let target_node_id = *target_depth_set
+                        .iter()
+                        .next()
+                        .expect("Depth unexpectedly empty");
+                    a.merge_nodes(target_node_id);
+                    println!("Removing {}:\n{}", target_node_id, a)
+                }
             }
-            
         }
     }
-}
 }
