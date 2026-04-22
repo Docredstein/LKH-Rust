@@ -72,8 +72,52 @@ impl Tree {
             None => Ok(()),
         }
     }
-}
 
+    fn update_children(&mut self, old_node_id: usize, new_node_id: usize) {
+        //We suppose that the current node is correct, we may need to update it's children
+        if self.array.len() >= 2 * old_node_id {
+            let parent_depth = self.array[new_node_id - 1]
+                .as_ref()
+                .expect("Invalid node update")
+                .depth;
+
+            //left
+            match self.array[2 * old_node_id - 1] {
+                None => {}
+                _ => {
+                    let mut node = self.array[2 * old_node_id - 1]
+                        .take()
+                        .expect("Unexpected none");
+
+                    let old_id = node.id;
+                    let new_id = 2 * new_node_id;
+                    node.id = new_id;
+                    node.depth = parent_depth + 1;
+
+                    self.array[new_id - 1] = Some(node);
+                    self.update_children(old_id, new_id);
+                }
+            }
+            //right
+            match self.array[2 * old_node_id] {
+                None => {}
+                _ => {
+                    let mut node = self.array[2 * old_node_id - 1]
+                        .take()
+                        .expect("Unexpected none");
+
+                    let old_id = node.id;
+                    let new_id = 2 * new_node_id + 1;
+                    node.id = new_id;
+                    node.depth = parent_depth + 1;
+
+                    self.array[new_id - 1] = Some(node);
+                    self.update_children(old_id, new_id);
+                }
+            }
+        }
+    }
+}
 impl BinaryTree for Tree {
     type Node = Node;
 
@@ -132,7 +176,7 @@ impl BinaryTree for Tree {
                 self.array[l_id] = Some(left_node);
                 self.array[r_id] = Some(right_node);
 
-                r_id+1
+                r_id + 1
             }
             None => {
                 //In this case, the tree is empty
@@ -161,7 +205,7 @@ impl BinaryTree for Tree {
         let node_to_delete = self.array[node_id_to_delete - 1]
             .take()
             .expect("Trying to delete non-existing node");
-        let mut brother = self.array[(node_id_to_delete ^ 1) -1]
+        let mut brother = self.array[(node_id_to_delete ^ 1) - 1]
             .take()
             .expect("Not root and no brother");
         let parent = self
@@ -188,12 +232,14 @@ impl BinaryTree for Tree {
             }
         };
         //Still need to update the childrens of brother to reflect the correct depth
-        brother.id = parent.id;
-        let return_id = parent.id;
-        brother.depth = parent.depth;
-        self.array[return_id-1] = Some(brother);
+        let old_id = brother.id;
+        let new_id = parent.id;
+        brother.id = new_id;
 
-        return_id
+        brother.depth = parent.depth;
+        self.array[new_id - 1] = Some(brother);
+        self.update_children(old_id, new_id);
+        new_id
     }
 
     fn get_node_by_id(&self, node_id: usize) -> &Option<Node> {
@@ -335,11 +381,55 @@ mod tests {
                 key_id: i as u64,
                 user: None,
             };
-            index= a.add_node(node);
-            println!("Adding {} :\n {}",index,a)
+            index = a.add_node(node);
+            println!("Adding {} :\n {}", index, a)
         }
-        println!("Before removal of {}:\n{}",index, a);
-        a.merge_nodes(index-1);
+        println!("Before removal of {}:\n{}", index, a);
+        a.merge_nodes(index - 1);
         println!("After Removal :\n{}", a);
     }
+
+    #[test]
+    fn test_add_then_delete() {
+        let mut a = Tree {
+            array: Vec::new(),
+            depth: HashMap::new(),
+        };
+
+        for i in 0..32 {
+            let node = Node {
+                depth: 0,
+                id: 5,
+                key: vec![1; 8],
+                key_id: i,
+                user: None,
+            };
+            a.add_node(node);
+        }
+        while true {
+            let max_depth = a
+                .depth
+                .iter()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(k, _)| k)
+                .max()
+                .copied();
+            match max_depth{
+                None => break, 
+                Some(max_depth) =>  {
+                    let target_depth_set = a
+                .depth
+                .get_mut(&max_depth)
+                .expect("Target depth unavailable");
+            let target_node_id = *target_depth_set
+                .iter()
+                .next()
+                .expect("Depth unexpectedly empty");
+            a.merge_nodes(target_node_id);
+            println!("Removing {}:\n{}", target_node_id, a)
+            }
+            
+        }
+    }
+}
 }
