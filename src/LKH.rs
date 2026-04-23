@@ -23,6 +23,51 @@ impl fmt::Display for Algorithm {
     }
 }
 
+struct KeyUpdatePacket {
+    new_key: Vec<u8>,
+    new_key_id: u64,
+    is_session_key : bool,
+    delete_new_key: bool
+}
+
+impl KeyUpdatePacket {
+    fn to_bytes(&self) -> Vec<u8>{
+        let flags: u8= (self.is_session_key as u8) | ((self.delete_new_key as u8) <<1);
+        let mut out = vec![flags];
+        out.extend_from_slice(&mut self.new_key_id.to_be_bytes().to_vec());
+        out.extend_from_slice(&mut self.new_key.clone());
+        out
+    }
+
+    fn from_bytes(packet: Vec<u8>) -> Option<Self> {
+        if packet.len()<10 {
+            None
+        }
+       
+        else {
+            let flags = packet[0];
+            let is_session_key = (flags & 1)==1;
+            let delete_new_key = (flags & 2)==2;
+            
+            let key_id:[u8;8] = packet[1..9].try_into().ok()?;
+            
+            let id = u64::from_be_bytes(key_id);
+            let key = packet[9..].to_vec();
+
+
+            Some(KeyUpdatePacket {
+                is_session_key:is_session_key,
+                new_key:key,
+                delete_new_key:delete_new_key,
+                new_key_id:id
+            })
+
+
+        }
+    }
+}
+
+
 impl Algorithm {
     fn key_size(&self) -> usize {
         match self {
@@ -150,14 +195,21 @@ impl Lkh {
         }
     }
 
+
+
     fn send_key_to_children(&self, node_id: usize) {
         // Send the new key to all children of the updated node
         //TODO : implement
+
+
+
     }
 
     fn send_key_by_unicast(&self, node_id: usize, path: Vec<(u64, Vec<u8>)>) {
         // Send the new key to the user of the updated node by unicast
         //TODO : implement
+
+        
     }
 
     pub fn add_user(&mut self, user_id: String, send: Box<dyn Fn(&[u8])>) {
