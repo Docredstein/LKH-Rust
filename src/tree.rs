@@ -3,16 +3,25 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 pub trait BinaryTree {
     type Node;
-    // Ownership of right_node will be transfered to the tree
-    // Return the node_id of the new node
+    /// Ownership of right_node will be transfered to the tree
+    /// Return the node_id of the new node
     fn add_node(&mut self, node: Node) -> usize;
+    /// delete node_id_to_delete and merge it's brother in the parent,
+    /// return the id of the new merged node
+    /// If node_id_to_delete is root, the tree will be emptied and 0 will be returned
     fn merge_nodes(&mut self, node_id_to_delete: usize) -> usize;
-    fn get_right_child(&self, node: &Node) -> &Option<Node>;
-    fn get_left_child(&self, node: &Node) -> &Option<Node>;
-    fn get_parent(&self, node: &Node) -> &Option<Node>;
-    fn get_node_by_id(&self, node_id: usize) -> &Option<Node>;
+    /// Get the right child of a node, if it exists
+    fn get_right_child(&self, node_id: usize) -> &Option<Node>;
+    /// Get the left child of a node, if it exists
+    fn get_left_child(&self, node_id:usize) -> &Option<Node>;
+    /// Get the parent of a node, if it exists
+    fn get_parent(&self, node_id: usize) -> &Option<Node>;
+    // get a mutable reference to a node by its id, if it exists
+    fn get_node_by_id_mut(&mut self, node_id: usize) -> Option<&mut Node>;
+    fn get_node_by_id(&mut self, node_id: usize) -> Option<&Node>;
     fn get_root(&self) -> Option<&Node>;
     fn get_user_node(&self, user_id: &String) -> Option<&usize>;
+    fn get_user_count(&self) -> usize;
 }
 #[derive(Debug)]
 pub struct Tree {
@@ -117,9 +126,7 @@ impl Tree {
             match self.array[2 * old_node_id] {
                 None => {}
                 _ => {
-                    let mut node = self.array[2 * old_node_id ]
-                        .take()
-                        .expect("Unexpected none");
+                    let mut node = self.array[2 * old_node_id].take().expect("Unexpected none");
 
                     let old_id = node.id;
                     let new_id = 2 * new_node_id + 1;
@@ -141,6 +148,9 @@ impl Tree {
 impl BinaryTree for Tree {
     type Node = Node;
 
+    fn get_user_count(&self) -> usize {
+        self.users.len()
+    }
     fn add_node(&mut self, mut right_node: Node) -> usize {
         let min_depth = self
             .depth
@@ -174,7 +184,7 @@ impl BinaryTree for Tree {
                     .expect("Node in self.depth not in array");
 
                 let mut left_node = target_node.clone();
-                target_node.user = None; 
+                target_node.user = None;
                 right_node.id = 2 * target_node_id + 1;
                 left_node.id = 2 * target_node_id;
                 left_node.depth = target_node.depth + 1;
@@ -277,14 +287,12 @@ impl BinaryTree for Tree {
         let old_id = brother.id;
         let new_id = parent.id;
         brother.id = new_id;
-        self.users.remove(
-            node_to_delete
-                .user
-                .as_ref()
-                .expect("Merged node without user")
-                .user_id
-                .as_str(),
-        );
+        match &node_to_delete.user {
+            None => {}
+            Some(user) => {
+                self.users.remove(user.user_id.as_str());
+            }
+        }
         match &brother.user {
             None => {}
             Some(user) => {
@@ -297,33 +305,46 @@ impl BinaryTree for Tree {
         new_id
     }
 
-    fn get_node_by_id(&self, node_id: usize) -> &Option<Node> {
+    fn get_node_by_id_mut(&mut self, node_id: usize) -> Option<&mut Node> {
         if (node_id - 1) > self.array.len() {
-            return &None;
+            return None;
         }
 
-        return &self.array[(node_id - 1) as usize];
+        //return self.array[(node_id - 1) as usize];
+        return self
+            .array
+            .get_mut(node_id - 1)
+            .expect("Unexpected id miss")
+            .as_mut();
     }
-    fn get_left_child(&self, node: &Node) -> &Option<Node> {
-        if self.array.len() >= 2 * node.id {
-            &self.array[(2 * node.id - 1) as usize]
+    fn get_node_by_id(&mut self, node_id: usize) -> Option<&Node> {
+        if (node_id - 1) > self.array.len() {
+            return None;
+        }
+
+        //return self.array[(node_id - 1) as usize];
+        return self.array[node_id - 1].as_ref();
+    }
+    fn get_left_child(&self, node_id: usize ) -> &Option<Node> {
+        if self.array.len() >= 2 * node_id {
+            &self.array[(2 * node_id - 1) as usize]
         } else {
             &None
         }
     }
 
-    fn get_right_child(&self, node: &Node) -> &Option<Node> {
-        if self.array.len() >= 2 * node.id + 1 {
-            &self.array[(2 * node.id) as usize]
+    fn get_right_child(&self, node_id: usize) -> &Option<Node> {
+        if self.array.len() >= 2 * node_id + 1 {
+            &self.array[(2 * node_id) as usize]
         } else {
             &None
         }
     }
 
-    fn get_parent(&self, node: &Node) -> &Option<Node> {
+    fn get_parent(&self, node_id: usize) -> &Option<Node> {
         // Implementation to get the parent of a node
-        if self.array.len() >= node.id / 2 {
-            &self.array[(node.id / 2 - 1) as usize]
+        if self.array.len() >= node_id / 2 {
+            &self.array[(node_id / 2 - 1) as usize]
         } else {
             &None
         }
@@ -496,7 +517,6 @@ mod tests {
             a.add_node(node);
             println!("{}", a);
         }
-        
     }
 
     #[test]
@@ -507,7 +527,7 @@ mod tests {
             let user = User {
                 user_id: format!("user{}", i),
                 send: Box::new(|data| println!("Sending data: {:?}", data)),
-             };
+            };
             let node = Node {
                 depth: 0,
                 id: 5,
