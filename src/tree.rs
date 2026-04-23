@@ -12,13 +12,14 @@ pub trait BinaryTree {
     fn get_parent(&self, node: &Node) -> &Option<Node>;
     fn get_node_by_id(&self, node_id: usize) -> &Option<Node>;
     fn get_root(&self) -> Option<&Node>;
+    fn get_user_node(&self, user_id: &String) -> Option<&usize>;
 }
 #[derive(Debug)]
 pub struct Tree {
     //root: Option<Node>,
     //nodes: HashMap<u64, &'a Node>, //Association between nodeID and node
     depth: HashMap<u64, HashSet<usize>>, //Association between depth (0 being root) and the set of leaves at that depth
-    users: HashMap<String, Vec<usize>>, //Association between userID and node, not ideal, should be in LKH
+    users: HashMap<String, usize>, //Association between userID and node, not ideal, should be in LKH
     array: Vec<Option<Node>>,
 }
 //Gemini
@@ -100,8 +101,15 @@ impl Tree {
                     let new_id = 2 * new_node_id;
                     node.id = new_id;
                     node.depth = parent_depth + 1;
+                    match node.user.as_ref() {
+                        None => {}
+                        Some(user) => {
+                            self.users.insert(user.user_id.clone(), node.id);
+                        }
+                    }
 
                     self.array[new_id - 1] = Some(node);
+
                     self.update_children(old_id, new_id);
                 }
             }
@@ -109,7 +117,7 @@ impl Tree {
             match self.array[2 * old_node_id] {
                 None => {}
                 _ => {
-                    let mut node = self.array[2 * old_node_id - 1]
+                    let mut node = self.array[2 * old_node_id ]
                         .take()
                         .expect("Unexpected none");
 
@@ -117,7 +125,12 @@ impl Tree {
                     let new_id = 2 * new_node_id + 1;
                     node.id = new_id;
                     node.depth = parent_depth + 1;
-
+                    match node.user.as_ref() {
+                        None => {}
+                        Some(user) => {
+                            self.users.insert(user.user_id.clone(), node.id);
+                        }
+                    }
                     self.array[new_id - 1] = Some(node);
                     self.update_children(old_id, new_id);
                 }
@@ -161,8 +174,9 @@ impl BinaryTree for Tree {
                     .expect("Node in self.depth not in array");
 
                 let mut left_node = target_node.clone();
-                left_node.id = 2 * target_node_id;
+                target_node.user = None; 
                 right_node.id = 2 * target_node_id + 1;
+                left_node.id = 2 * target_node_id;
                 left_node.depth = target_node.depth + 1;
                 right_node.depth = target_node.depth + 1;
 
@@ -170,13 +184,13 @@ impl BinaryTree for Tree {
                 match &left_node.user {
                     None => {}
                     Some(user) => {
-                        self.users.insert(user.user_id.clone(), vec![left_node.id]);
+                        self.users.insert(user.user_id.clone(), left_node.id);
                     }
                 }
                 match &right_node.user {
                     None => {}
                     Some(user) => {
-                        self.users.insert(user.user_id.clone(), vec![left_node.id]);
+                        self.users.insert(user.user_id.clone(), right_node.id);
                     }
                 }
 
@@ -208,7 +222,7 @@ impl BinaryTree for Tree {
                 match right_node.user.as_ref() {
                     None => {}
                     Some(user) => {
-                        self.users.insert(user.user_id.clone(), vec![1]);
+                        self.users.insert(user.user_id.clone(), 1);
                     }
                 }
                 self.array.push(Some(right_node));
@@ -263,7 +277,20 @@ impl BinaryTree for Tree {
         let old_id = brother.id;
         let new_id = parent.id;
         brother.id = new_id;
-
+        self.users.remove(
+            node_to_delete
+                .user
+                .as_ref()
+                .expect("Merged node without user")
+                .user_id
+                .as_str(),
+        );
+        match &brother.user {
+            None => {}
+            Some(user) => {
+                self.users.insert(user.user_id.clone(), brother.id);
+            }
+        }
         brother.depth = parent.depth;
         self.array[new_id - 1] = Some(brother);
         self.update_children(old_id, new_id);
@@ -310,10 +337,16 @@ impl BinaryTree for Tree {
             None => None,
         }
     }
+
+    fn get_user_node(&self, user_id: &String) -> Option<&usize> {
+        self.users.get(user_id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::user::User;
+
     use super::*;
 
     #[test]
@@ -442,5 +475,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_with_users() {
+        let mut a = Tree::new();
+
+        for i in 0..4 {
+            let user = User {
+                user_id: format!("user{}", i),
+                send: Box::new(|data| println!("Sending data: {:?}", data)),
+            };
+            let node = Node {
+                depth: 0,
+                id: 5,
+                key: vec![1; 8],
+                key_id: i,
+                user: Some(std::rc::Rc::new(user)),
+            };
+            a.add_node(node);
+            println!("{}", a);
+        }
+        
+    }
+
+    #[test]
+    fn test_move_up_subtree() {
+        let mut a = Tree::new();
+
+        for i in 0..4 {
+            let user = User {
+                user_id: format!("user{}", i),
+                send: Box::new(|data| println!("Sending data: {:?}", data)),
+             };
+            let node = Node {
+                depth: 0,
+                id: 5,
+                key: vec![1; 8],
+                key_id: i,
+                user: Some(std::rc::Rc::new(user)),
+            };
+            a.add_node(node);
+        }
+        println!("Before moving up:\n{}", a);
+        a.merge_nodes(4);
+        println!("Mid step:\n{}", a);
+        a.merge_nodes(2);
+        println!("After moving up:\n{}", a);
     }
 }
