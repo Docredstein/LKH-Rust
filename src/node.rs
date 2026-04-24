@@ -23,7 +23,8 @@ impl std::clone::Clone for Node {
 }
 impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let _ = write!(f, "Node of key [{}]=>{:x?} : ",self.key_id,self.key);
+        let hexkey: String = self.key.iter().map(|b| format!("{:02x}",b)).collect();//Gemini
+        let _ = write!(f, "Node of key [{}]=>{} : ",self.key_id,hexkey);
         match &self.user  {
             None =>     write!(f,"None"),
             Some(user) => write!(f, "{},", user.user_id)

@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 openssl = "0.10.78"
 openssl-sys = "0.9.114"
+[features]
+debug = []

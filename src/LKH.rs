@@ -106,16 +106,16 @@ pub struct Lkh {
     //users: HashMap<String, usize>, //Delegated to Tree
     algorithm: Algorithm,
     send_group: Box<dyn Fn(&[u8])>,
-    debug: bool,
 }
 
 impl std::fmt::Debug for Lkh {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         return write!(
             f,
-            "LKH Tree of {} users using [{}]",
+            "LKH Tree of {} users using [{}] : \n{}",
             self.tree.get_user_count(),
-            self.algorithm
+            self.algorithm,
+            self.tree
         );
     }
 }
@@ -142,6 +142,17 @@ impl Lkh {
             .as_ref()
             .map_or(false, |node| node.user.is_some());
         let mut path: Vec<(u64, Vec<u8>)> = Vec::new();
+
+        //We also need to update the parent key_id, assuming that there is a parent
+
+        let parent =  self.tree.get_parent(node_id);
+        match parent {
+            None => (),
+            Some(node) => {
+                let parent_id = node.id;
+                self.tree.get_node_by_id_mut(parent_id).expect("msg").key_id=self.generate_key_id();
+            }
+        }
 
         loop {
             if already_updated.contains(&current_id) {
@@ -176,6 +187,8 @@ impl Lkh {
                     node.key = new_key;
                 }
             }
+            self.send_key_to_children(current_id);
+
             current_id = match self.tree.get_parent(current_id) {
                 None => break,
                 Some(node) => node.id,
@@ -190,11 +203,58 @@ impl Lkh {
     fn send_key_to_children(&self, node_id: usize) {
         // Send the new key to all children of the updated node
         //TODO : implement
+        let session_key_id = self
+            .tree
+            .get_root()
+            .expect("Trying to update an empty tree")
+            .key_id;
+
+        let (new_key, key_id) = match self.tree.get_node_by_id(node_id) {
+            None => return,
+            Some(node) => {
+                let new_key = node.key.clone();
+                let key_id = node.key_id;
+                (new_key, key_id)
+            }
+        };
+
+        let packet = KeyUpdatePacket {
+            new_key: new_key,
+            new_key_id: key_id,
+            is_session_key: key_id == session_key_id,
+            delete_new_key: false,
+        }
+        .to_bytes();
+
+        match self.tree.get_left_child(node_id) {
+            None => (),
+            Some(node) => {
+                let ksk = &node.key;
+                let ksk_id = (&node.key_id).to_be_bytes();
+
+                let (mut iv, tag, cipher) = self.algorithm.encrypt(ksk, &packet, &ksk_id);
+                iv.extend_from_slice(&tag);
+                iv.extend_from_slice(&cipher);
+                (self.send_group)(&iv);
+            }
+        };
+        match self.tree.get_right_child(node_id) {
+            None => (),
+            Some(node) => {
+                let ksk = &node.key;
+                let ksk_id = (&node.key_id).to_be_bytes();
+
+                let (mut iv, tag, cipher) = self.algorithm.encrypt(ksk, &packet, &ksk_id);
+                iv.extend_from_slice(&tag);
+                iv.extend_from_slice(&cipher);
+                (self.send_group)(&iv);
+            }
+        };
     }
 
     fn send_key_by_unicast(&self, node_id: usize, path: Vec<(u64, Vec<u8>)>) {
         // Send the new key to the user of the updated node by unicast
-        
+
         let session_key_id = self
             .tree
             .get_root()
@@ -213,6 +273,14 @@ impl Lkh {
                 delete_new_key: should_delete,
             };
             let node = self.tree.get_node_by_id(node_id);
+            #[cfg(feature = "debug")]
+            {
+                println!(
+                    "Sending key {key_id} to {0} [{1:x?}]",
+                    node.expect("Wrong node").id,
+                    i.1
+                )
+            }
             (node
                 .expect("Trying to send to a non existing node")
                 .user
@@ -252,7 +320,6 @@ mod tests {
             tree: tree,
             algorithm: Algorithm::AesGcm256,
             send_group: Box::new(|data| println!("Sending group data: {:?}", data)),
-            debug: true,
         };
         println!("{:?}", lkh);
     }
@@ -286,14 +353,40 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             algorithm: Algorithm::AesGcm256,
-            send_group: Box::new(|data| println!("Sending group data: {:?}", data)),
-            debug: true,
+            send_group: Box::new(|data| println!("recieved group data: {:x?}", data)),
         };
         println!("{:?}", lkh);
 
-        lkh.add_user("User0".to_string(), Box::new(|data| println!("Recieved privately : {:?}",data)));
+        lkh.add_user(
+            "User0".to_string(),
+            Box::new(|data| println!("Recieved privately : {:x?}", data)),
+        );
         println!("{:?}", lkh);
     }
+    #[test]
+    fn test_add_three_user() {
+        let tree = Tree::new();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(|data| println!("Sending group data: {:?}", data)),
+        };
+        println!("{:?}", lkh);
 
-
+        lkh.add_user(
+            "User0".to_string(),
+            Box::new(|data| println!("0 Recieved privately : {:?}", data)),
+        );
+        println!("{:?}", lkh);
+        lkh.add_user(
+            "User1".to_string(),
+            Box::new(|data| println!("1 Recieved privately : {:?}", data)),
+        );
+        println!("{:?}", lkh);
+        lkh.add_user(
+            "User2".to_string(),
+            Box::new(|data| println!("2 Recieved privately : {:?}", data)),
+        );
+        println!("{:?}", lkh);
+    }
 }
