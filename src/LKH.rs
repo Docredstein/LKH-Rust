@@ -1,8 +1,9 @@
-use crate::node::{self, Node};
+use crate::node::Node;
 use crate::tree::{BinaryTree, Tree};
-use openssl::aes::AesKey;
+
+use colored::Colorize;
 use openssl::rand::rand_bytes;
-use openssl::symm::{Cipher, Mode, decrypt_aead, encrypt_aead};
+use openssl::symm::{Cipher, decrypt_aead, encrypt_aead};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -71,10 +72,8 @@ impl Algorithm {
     fn encrypt(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         match self {
             Algorithm::AesGcm256 => {
-                let cipher = AesKey::new_encrypt(key).unwrap();
-
                 let mut iv = [0 as u8; 32];
-                rand_bytes(&mut iv);
+                rand_bytes(&mut iv).expect("Unable to generate random Bytes");
                 let mut tag = vec![0 as u8; 16];
                 match encrypt_aead(
                     Cipher::aes_256_gcm(),
@@ -105,7 +104,7 @@ pub struct Lkh {
     tree: Tree,
     //users: HashMap<String, usize>, //Delegated to Tree
     algorithm: Algorithm,
-    send_group: Box<dyn Fn(&[u8])>,
+    send_group: Box<dyn Fn(Vec<u8>)>,
 }
 
 impl std::fmt::Debug for Lkh {
@@ -145,12 +144,13 @@ impl Lkh {
 
         //We also need to update the parent key_id, assuming that there is a parent
 
-        let parent =  self.tree.get_parent(node_id);
+        let parent = self.tree.get_parent(node_id);
         match parent {
             None => (),
             Some(node) => {
                 let parent_id = node.id;
-                self.tree.get_node_by_id_mut(parent_id).expect("msg").key_id=self.generate_key_id();
+                self.tree.get_node_by_id_mut(parent_id).expect("msg").key_id =
+                    self.generate_key_id();
             }
         }
 
@@ -203,6 +203,14 @@ impl Lkh {
     fn send_key_to_children(&self, node_id: usize) {
         // Send the new key to all children of the updated node
         //TODO : implement
+        #[cfg(feature = "debug")]
+        {
+            println!(
+                "Sending new key of node {} to its children if they exist",
+                node_id
+            );
+        }
+
         let session_key_id = self
             .tree
             .get_root()
@@ -229,25 +237,51 @@ impl Lkh {
         match self.tree.get_left_child(node_id) {
             None => (),
             Some(node) => {
-                let ksk = &node.key;
-                let ksk_id = (&node.key_id).to_be_bytes();
+                #[cfg(feature = "debug")]
+                {
+                    println!("Sending new key to left child : {}", node.id);
+                }
 
-                let (mut iv, tag, cipher) = self.algorithm.encrypt(ksk, &packet, &ksk_id);
-                iv.extend_from_slice(&tag);
-                iv.extend_from_slice(&cipher);
-                (self.send_group)(&iv);
+                let ksk = &node.key;
+                let mut ksk_id = (&node.key_id).to_be_bytes().to_vec();
+
+                #[cfg(feature = "debug")]
+                {
+                    println!(
+                        "Encrypting packet for child {} with key {:x?}",
+                        node.id, ksk
+                    );
+                }
+                let (iv, tag, cipher) = self.algorithm.encrypt(ksk, &packet, &ksk_id);
+                ksk_id.extend_from_slice(&iv);
+                ksk_id.extend_from_slice(&tag);
+                ksk_id.extend_from_slice(&cipher);
+
+                #[cfg(feature = "debug")]
+                {
+                    println!("IV: {:x?}", iv);
+                    println!("Tag: {:x?}", tag);
+                    println!("Ciphertext: {:x?}", cipher);
+                    println!("Sending group data: {:x?}", ksk_id);
+                }
+                (self.send_group)(ksk_id);
             }
         };
         match self.tree.get_right_child(node_id) {
             None => (),
             Some(node) => {
+                #[cfg(feature = "debug")]
+                {
+                    println!("Sending new key to right child : {}", node.id);
+                }
                 let ksk = &node.key;
-                let ksk_id = (&node.key_id).to_be_bytes();
+                let mut ksk_id = (&node.key_id).to_be_bytes().to_vec();
 
-                let (mut iv, tag, cipher) = self.algorithm.encrypt(ksk, &packet, &ksk_id);
-                iv.extend_from_slice(&tag);
-                iv.extend_from_slice(&cipher);
-                (self.send_group)(&iv);
+                let (iv, tag, cipher) = self.algorithm.encrypt(ksk, &packet, &ksk_id);
+                ksk_id.extend_from_slice(&iv);
+                ksk_id.extend_from_slice(&tag);
+                ksk_id.extend_from_slice(&cipher);
+                (self.send_group)(ksk_id);
             }
         };
     }
@@ -308,9 +342,182 @@ impl Lkh {
     }
 }
 
+struct TestUser {
+    user_id: String,
+    keys: HashMap<u64, Vec<u8>>,
+    algorithm: Algorithm,
+    session_key_id: Option<u64>,
+}
+
+impl fmt::Debug for TestUser {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TestUser [{}] : ", self.user_id).ok();
+        for (key_id, key) in self.keys.iter() {
+            write!(f, "\n\t").ok();
+            if self.session_key_id.is_some() && self.session_key_id.unwrap() == *key_id {
+                write!(f, "\x1b[93m(Session Key)\x1b[0m ").ok();
+            }
+            let hexkey: String = key.iter().map(|b| format!("{:02x}", b)).collect(); //Gemini
+            write!(f, "Key {} : {}", key_id, hexkey).ok();
+        }
+        return Ok(());
+    }
+}
+
+impl TestUser {
+    fn receive_single(&mut self, data: Vec<u8>) {
+        let packet = KeyUpdatePacket::from_bytes(data);
+        match packet {
+            None => {
+                #[cfg(feature = "debug")]
+                {
+                    println!("User {} received an invalid packet", self.user_id);
+                }
+            }
+            Some(packet) => {
+                self.keys.insert(packet.new_key_id, packet.new_key);
+                if packet.is_session_key {
+                    self.session_key_id = Some(packet.new_key_id);
+                }
+                #[cfg(feature = "debug")]
+                {
+                    println!(
+                        "User {} updated key {} with new key {}",
+                        self.user_id, packet.new_key_id, packet.new_key_id
+                    );
+                }
+            }
+        }
+    }
+
+    fn receive_group(&mut self, data: Vec<u8>) {
+        //data : ksk_id,iv,tag,cipher
+        #[cfg(feature = "debug")]
+        {
+            println!("User {} received group data", self.user_id,);
+
+            println!("Availables keys: {:?}", self.keys);
+        }
+        match &self.algorithm {
+            Algorithm::AesGcm256 => {
+                if data.len() < (8 + 32 + 16) {
+                    #[cfg(feature = "debug")]
+                    {
+                        println!(
+                            "User {} received an invalid packet [Too short] [{} < 56]",
+                            self.user_id,
+                            data.len()
+                        );
+                    }
+                    return;
+                }
+                let mut ksk_id_byte: [u8; 8] = [0; 8];
+                ksk_id_byte.copy_from_slice(&data[..8]);
+                let ksk_id = u64::from_be_bytes(ksk_id_byte);
+
+                if !self.keys.contains_key(&ksk_id) {
+                    #[cfg(feature = "debug")]
+                    {
+                        println!(
+                            "User {} does not have the key {} needed to decrypt the packet",
+                            self.user_id, ksk_id
+                        );
+                    }
+
+                    return;
+                }
+                let ksk = self.keys.get(&ksk_id).expect("Unexpected missing key");
+                let iv: [u8; 32] = data[8..40]
+                    .try_into()
+                    .expect("Unexpected invalid iv length");
+                let tag = &data[40..56];
+                let cipher = &data[56..];
+                #[cfg(feature = "debug")]
+                {
+                    println!("IV: {:x?}", iv);
+                    println!("Tag: {:x?}", tag);
+                    println!("Ciphertext: {:x?}", cipher);
+                    println!(
+                        "User {} is trying to decrypt the packet with key {:x?}",
+                        self.user_id, ksk
+                    );
+                }
+
+                let packet = self
+                    .algorithm
+                    .decrypt(ksk, &iv, &ksk_id.to_be_bytes(), cipher, tag);
+                let key_update = KeyUpdatePacket::from_bytes(packet);
+                match key_update {
+                    None => {
+                        #[cfg(feature = "debug")]
+                        {
+                            println!("GROUP : User {} received an invalid packet", self.user_id);
+                        }
+                    }
+                    Some(packet) => {
+                        self.keys.insert(packet.new_key_id, packet.new_key);
+                        if packet.is_session_key {
+                            self.session_key_id = Some(packet.new_key_id);
+                        }
+                        #[cfg(feature = "debug")]
+                        {
+                            println!(
+                                "GROUP : User {} updated key {} with new key {}",
+                                self.user_id, packet.new_key_id, packet.new_key_id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct TreeTestUser {
+    users: Vec<TestUser>,
+}
+
+impl fmt::Debug for TreeTestUser {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TreeTestUser : ").ok();
+        for user in self.users.iter() {
+            write!(f, "\n\t{:?}", user).ok();
+        }
+        return Ok(());
+    }
+}
+
+impl TreeTestUser {
+    fn get_user(&mut self, id: usize) -> Option<&mut TestUser> {
+        self.users.get_mut(id)
+    }
+    fn new_user(&mut self) -> usize {
+        let userId = format!("User{}", self.users.len());
+        let keys = HashMap::new();
+        let test_user = TestUser {
+            user_id: userId,
+            keys: keys,
+            algorithm: Algorithm::AesGcm256,
+            session_key_id: None,
+        };
+        self.users.push(test_user);
+        self.users.len() - 1
+    }
+    fn receive_group(&mut self, data: Vec<u8>) {
+        #[cfg(feature = "debug")]
+        {
+            println!("received group data : {:x?}", data);
+        }
+        for i in self.users.iter_mut() {
+            i.receive_group(data.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::user::User;
+
+    use std::{cell::RefCell, rc::Rc};
 
     use super::*;
     #[test]
@@ -388,5 +595,68 @@ mod tests {
             Box::new(|data| println!("2 Recieved privately : {:?}", data)),
         );
         println!("{:?}", lkh);
+    }
+    #[test]
+    fn test_adding_one_user_realist() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+
+        let user_id = users.borrow_mut().new_user();
+        let unicast_user = users.clone();
+        let unicast_user_id = unicast_user
+            .borrow_mut()
+            .get_user(user_id)
+            .expect("invalid id")
+            .user_id
+            .clone();
+        lkh.add_user(
+            unicast_user_id,
+            Box::new(move |data| {
+                unicast_user
+                    .borrow_mut()
+                    .get_user(user_id)
+                    .expect("invalid id")
+                    .receive_single(data)
+            }),
+        );
+    }
+    #[test]
+    fn test_adding_three_user_realist() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        for _ in 0..3 {
+            let user_id = users.borrow_mut().new_user();
+            let unicast_user = users.clone();
+            let unicast_user_id = unicast_user
+                .borrow_mut()
+                .get_user(user_id)
+                .expect("invalid id")
+                .user_id
+                .clone();
+            lkh.add_user(
+                unicast_user_id,
+                Box::new(move |data| {
+                    unicast_user
+                        .borrow_mut()
+                        .get_user(user_id)
+                        .expect("invalid id")
+                        .receive_single(data)
+                }),
+            );
+            println!("{:?}", lkh);
+        }
+        println!("{:?}", users);
     }
 }
