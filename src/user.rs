@@ -1,6 +1,6 @@
 pub struct User {
     pub user_id: String,
-    pub send: Box<dyn Fn(&[u8])>,
+    pub send: Box<dyn Fn(Vec<u8>)>,
 }
 
 impl std::fmt::Debug for User {
@@ -35,7 +35,7 @@ mod tests {
             user_id: "123".to_string(),
             send: Box::new(|data| println!("{:?}", data)),
         };
-        (user.send)(b"Hello, World!");
+        (user.send)(b"Hello, World!".to_vec());
     }
 
     #[test]

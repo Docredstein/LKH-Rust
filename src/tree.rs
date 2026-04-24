@@ -18,7 +18,7 @@ pub trait BinaryTree {
     fn get_parent(&self, node_id: usize) -> &Option<Node>;
     // get a mutable reference to a node by its id, if it exists
     fn get_node_by_id_mut(&mut self, node_id: usize) -> Option<&mut Node>;
-    fn get_node_by_id(&mut self, node_id: usize) -> Option<&Node>;
+    fn get_node_by_id(&self, node_id: usize) -> Option<&Node>;
     fn get_root(&self) -> Option<&Node>;
     fn get_user_node(&self, user_id: &String) -> Option<&usize>;
     fn get_user_count(&self) -> usize;
@@ -317,7 +317,7 @@ impl BinaryTree for Tree {
             .expect("Unexpected id miss")
             .as_mut();
     }
-    fn get_node_by_id(&mut self, node_id: usize) -> Option<&Node> {
+    fn get_node_by_id(&self, node_id: usize) -> Option<&Node> {
         if (node_id - 1) > self.array.len() {
             return None;
         }
@@ -343,7 +343,10 @@ impl BinaryTree for Tree {
 
     fn get_parent(&self, node_id: usize) -> &Option<Node> {
         // Implementation to get the parent of a node
-        if self.array.len() >= node_id / 2 {
+        if node_id <=1  {
+            &None
+        }
+        else if self.array.len() >= node_id / 2 {
             &self.array[(node_id / 2 - 1) as usize]
         } else {
             &None
