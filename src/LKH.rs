@@ -183,7 +183,7 @@ impl Lkh {
                 Some(node) => {
                     let old_key = node.key.clone();
 
-                    path.push((node.key_id, old_key));
+                    path.push((node.key_id, new_key.clone()));
                     node.key = new_key;
                 }
             }
@@ -625,6 +625,9 @@ mod tests {
                     .receive_single(data)
             }),
         );
+
+        println!("{:?}", lkh);
+        println!("{:?}", users);
     }
     #[test]
     fn test_adding_three_user_realist() {
@@ -637,6 +640,39 @@ mod tests {
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         for _ in 0..3 {
+            let user_id = users.borrow_mut().new_user();
+            let unicast_user = users.clone();
+            let unicast_user_id = unicast_user
+                .borrow_mut()
+                .get_user(user_id)
+                .expect("invalid id")
+                .user_id
+                .clone();
+            lkh.add_user(
+                unicast_user_id,
+                Box::new(move |data| {
+                    unicast_user
+                        .borrow_mut()
+                        .get_user(user_id)
+                        .expect("invalid id")
+                        .receive_single(data)
+                }),
+            );
+            println!("{:?}", lkh);
+        }
+        println!("{:?}", users);
+    }
+    #[test]
+    fn test_adding_32_user_realist() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        for _ in 0..32 {
             let user_id = users.borrow_mut().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
