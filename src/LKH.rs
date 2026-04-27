@@ -6,6 +6,7 @@ use openssl::rand::rand_bytes;
 use openssl::symm::{Cipher, decrypt_aead, encrypt_aead};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::ops::Index;
 
 #[derive(Debug, PartialEq, Eq)]
 enum Algorithm {
@@ -89,12 +90,12 @@ impl Algorithm {
             }
         }
     }
-    fn decrypt(&self, key: &[u8], iv: &[u8], aad: &[u8], ciphertext: &[u8], tag: &[u8]) -> Vec<u8> {
+    fn decrypt(&self, key: &[u8], iv: &[u8], aad: &[u8], ciphertext: &[u8], tag: &[u8]) -> Option<Vec<u8>> {
         match self {
             Algorithm::AesGcm256 => {
                 match decrypt_aead(Cipher::aes_256_gcm(), key, Some(iv), aad, ciphertext, tag) {
-                    Ok(plaintext) => plaintext,
-                    Err(e) => panic!("Decryption failed: {:?}", e),
+                    Ok(plaintext) => Some(plaintext),
+                    Err(e) => None,
                 }
             }
         }
@@ -340,6 +341,20 @@ impl Lkh {
         let new_id = self.tree.add_node(node);
         self.update_keys(new_id, &mut HashSet::new());
     }
+
+    pub fn remove_user(&mut self, user_id: &String) {
+        let node_id = match self.tree.get_user_node(user_id) {
+            None => return,
+            Some(id) => id,
+        };
+        let merged_node = self.tree.merge_nodes(*node_id);
+        match merged_node {
+            0 => (),
+            _ => {
+                self.update_keys(merged_node, &mut HashSet::new());
+            }
+        }
+    }
 }
 
 struct TestUser {
@@ -347,6 +362,7 @@ struct TestUser {
     keys: HashMap<u64, Vec<u8>>,
     algorithm: Algorithm,
     session_key_id: Option<u64>,
+    in_tree: bool,
 }
 
 impl fmt::Debug for TestUser {
@@ -443,9 +459,23 @@ impl TestUser {
                     );
                 }
 
-                let packet = self
+                let packet = match self
                     .algorithm
-                    .decrypt(ksk, &iv, &ksk_id.to_be_bytes(), cipher, tag);
+                    .decrypt(ksk, &iv, &ksk_id.to_be_bytes(), cipher, tag)
+                    {
+                        Some(plaintext) => plaintext,
+                        None => {
+                            #[cfg(feature = "debug")]
+                            {
+                                println!(
+                                    "User {} failed to decrypt the packet with key {}",
+                                    self.user_id, ksk_id
+                                );
+                            }
+                            return;
+                        }
+                    };
+                
                 let key_update = KeyUpdatePacket::from_bytes(packet);
                 match key_update {
                     None => {
@@ -491,6 +521,21 @@ impl TreeTestUser {
     fn get_user(&mut self, id: usize) -> Option<&mut TestUser> {
         self.users.get_mut(id)
     }
+    fn get_user_by_id(&mut self, user_id: &String) -> Option<usize> {
+        self.users.iter()
+            .position(|u| &u.user_id == user_id)
+    }
+    fn check_session_key(&self, session_key_id: u64) -> bool {
+        self.users.iter().any(|u| {
+            if (u.in_tree && u.session_key_id == Some(session_key_id)) {
+                true
+            } else if !u.in_tree && u.session_key_id != Some(session_key_id) {
+                true
+            } else {
+                false
+            }
+        })
+    }
     fn new_user(&mut self) -> usize {
         let userId = format!("User{}", self.users.len());
         let keys = HashMap::new();
@@ -499,6 +544,7 @@ impl TreeTestUser {
             keys: keys,
             algorithm: Algorithm::AesGcm256,
             session_key_id: None,
+            in_tree: false,
         };
         self.users.push(test_user);
         self.users.len() - 1
@@ -512,12 +558,19 @@ impl TreeTestUser {
             i.receive_group(data.clone());
         }
     }
+    fn add_user_to_tree(&mut self, id: usize) {
+        self.users.get_mut(id).expect("Invalid user id").in_tree = true;
+    }
+    fn remove_user_from_tree(&mut self, id: usize) {
+        self.users.get_mut(id).expect("Invalid user id").in_tree = false;
+    }
 }
-
 #[cfg(test)]
 mod tests {
 
     use std::{cell::RefCell, rc::Rc};
+
+    use crate::user;
 
     use super::*;
     #[test]
@@ -548,7 +601,7 @@ mod tests {
         let plaintext = b"Hello, World!";
         let aad = b"Additional Data";
         let (iv, tag, ciphertext) = a.encrypt(&key, plaintext, aad);
-        let decrypted = a.decrypt(&key, &iv, aad, &ciphertext, &tag);
+        let decrypted = a.decrypt(&key, &iv, aad, &ciphertext, &tag).expect("Unable to decrypt");
         assert_eq!(plaintext.to_vec(), decrypted);
         println!("Original : {:x?}", plaintext);
         println!("Decrypted: {:x?}", decrypted);
@@ -615,6 +668,7 @@ mod tests {
             .expect("invalid id")
             .user_id
             .clone();
+        users.borrow_mut().add_user_to_tree(user_id);
         lkh.add_user(
             unicast_user_id,
             Box::new(move |data| {
@@ -648,6 +702,7 @@ mod tests {
                 .expect("invalid id")
                 .user_id
                 .clone();
+            users.borrow_mut().add_user_to_tree(user_id);
             lkh.add_user(
                 unicast_user_id,
                 Box::new(move |data| {
@@ -658,10 +713,15 @@ mod tests {
                         .receive_single(data)
                 }),
             );
+            let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
+            assert!(users.borrow().check_session_key(rootkeyid));
             println!("{:?}", lkh);
         }
         println!("{:?}", users);
+        let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
+        assert!(users.borrow().check_session_key(rootkeyid));
     }
+
     #[test]
     fn test_adding_32_user_realist() {
         let tree = Tree::new();
@@ -681,6 +741,7 @@ mod tests {
                 .expect("invalid id")
                 .user_id
                 .clone();
+            users.borrow_mut().add_user_to_tree(user_id);
             lkh.add_user(
                 unicast_user_id,
                 Box::new(move |data| {
@@ -691,8 +752,55 @@ mod tests {
                         .receive_single(data)
                 }),
             );
+            let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
+            assert!(users.borrow().check_session_key(rootkeyid));
             println!("{:?}", lkh);
         }
         println!("{:?}", users);
+        let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
+        assert!(users.borrow().check_session_key(rootkeyid));
+    }
+
+    #[test]
+    fn test_remove_user() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        for _ in 0..3 {
+            let user_id = users.borrow_mut().new_user();
+            let unicast_user = users.clone();
+            let unicast_user_id = unicast_user
+                .borrow_mut()
+                .get_user(user_id)
+                .expect("invalid id")
+                .user_id
+                .clone();
+            users.borrow_mut().add_user_to_tree(user_id);
+            lkh.add_user(
+                unicast_user_id,
+                Box::new(move |data| {
+                    unicast_user
+                        .borrow_mut()
+                        .get_user(user_id)
+                        .expect("invalid id")
+                        .receive_single(data)
+                }),
+            );
+        }
+        println!("{:?}", lkh);
+        println!("{:?}", users);
+        lkh.remove_user(&"User1".to_string());
+        let user_id = users.borrow_mut().get_user_by_id(&"User1".to_string()).unwrap();
+        users.borrow_mut().remove_user_from_tree(user_id);
+        println!("After removing User1");
+        println!("{:?}", lkh);
+        println!("{:?}", users);
+        let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
+        assert!(users.borrow().check_session_key(rootkeyid));
     }
 }
