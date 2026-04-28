@@ -13,7 +13,7 @@ pub trait BinaryTree {
     /// Get the right child of a node, if it exists
     fn get_right_child(&self, node_id: usize) -> &Option<Node>;
     /// Get the left child of a node, if it exists
-    fn get_left_child(&self, node_id:usize) -> &Option<Node>;
+    fn get_left_child(&self, node_id: usize) -> &Option<Node>;
     /// Get the parent of a node, if it exists
     fn get_parent(&self, node_id: usize) -> &Option<Node>;
     // get a mutable reference to a node by its id, if it exists
@@ -22,12 +22,13 @@ pub trait BinaryTree {
     fn get_root(&self) -> Option<&Node>;
     fn get_user_node(&self, user_id: &String) -> Option<&usize>;
     fn get_user_count(&self) -> usize;
+    fn verify_integrity(&self) -> bool;
 }
 #[derive(Debug)]
 pub struct Tree {
     //root: Option<Node>,
     //nodes: HashMap<u64, &'a Node>, //Association between nodeID and node
-    depth: HashMap<u64, HashSet<usize>>, //Association between depth (0 being root) and the set of leaves at that depth
+    pub depth: HashMap<u64, HashSet<usize>>, //Association between depth (0 being root) and the set of leaves at that depth
     users: HashMap<String, usize>, //Association between userID and node, not ideal, should be in LKH
     array: Vec<Option<Node>>,
 }
@@ -99,6 +100,13 @@ impl Tree {
                 .depth;
 
             //left
+            let mut updated_something_flag = false;
+            let mut old_right_id = 0;
+            let mut new_right_id = 0;
+
+            let mut old_left_id = 0;
+            let mut new_left_id = 0;
+
             match self.array[2 * old_node_id - 1] {
                 None => {}
                 _ => {
@@ -108,18 +116,32 @@ impl Tree {
 
                     let old_id = node.id;
                     let new_id = 2 * new_node_id;
+                    let old_depth = node.depth.clone();
                     node.id = new_id;
                     node.depth = parent_depth + 1;
                     match node.user.as_ref() {
                         None => {}
                         Some(user) => {
+                            self.depth
+                                .get_mut(&old_depth)
+                                .expect("Old depth not found")
+                                .remove(&old_id);
+                            self.depth
+                                .entry(node.depth)
+                                .or_insert(HashSet::new())
+                                .insert(node.id);
                             self.users.insert(user.user_id.clone(), node.id);
+                            println!(
+                                "moving up {} from {} to {}",
+                                user.user_id, old_depth, node.depth
+                            );
                         }
                     }
 
                     self.array[new_id - 1] = Some(node);
-
-                    self.update_children(old_id, new_id);
+                    old_left_id = old_id;
+                    new_left_id = new_id;
+                    updated_something_flag = true;
                 }
             }
             //right
@@ -130,17 +152,40 @@ impl Tree {
 
                     let old_id = node.id;
                     let new_id = 2 * new_node_id + 1;
+                    let old_depth = node.depth.clone();
+
                     node.id = new_id;
                     node.depth = parent_depth + 1;
+
                     match node.user.as_ref() {
                         None => {}
                         Some(user) => {
                             self.users.insert(user.user_id.clone(), node.id);
+                            self.depth
+                                .get_mut(&old_depth)
+                                .expect("Old depth not found")
+                                .remove(&old_id);
+                            self.depth
+                                .entry(node.depth)
+                                .or_insert(HashSet::new())
+                                .insert(node.id);
+                            println!(
+                                "moving up {} from {} to {}",
+                                user.user_id, old_depth, node.depth
+                            );
                         }
                     }
+                    old_right_id = old_id;
+                    new_right_id = new_id;
+                    updated_something_flag = true;
                     self.array[new_id - 1] = Some(node);
-                    self.update_children(old_id, new_id);
                 }
+            }
+            if updated_something_flag {
+                println!("Updated left child from {} to {}", old_left_id, new_left_id);
+                self.update_children(old_left_id, new_left_id);
+                println!("Updated right child from {} to {}", old_right_id, new_right_id);
+                self.update_children(old_right_id, new_right_id);
             }
         }
     }
@@ -150,6 +195,40 @@ impl BinaryTree for Tree {
 
     fn get_user_count(&self) -> usize {
         self.users.len()
+    }
+    fn verify_integrity(&self) -> bool {
+        for (depth, node_ids) in &self.depth {
+            for node_id in node_ids {
+                if let Some(node) = self.array[node_id - 1].as_ref() {
+                    if node.depth != *depth {
+                        println!(
+                            "Integrity error: Node ID {} has depth {}, expected {}",
+                            node_id, node.depth, depth
+                        );
+                        return false;
+                    }
+                    if node.user.is_none() {
+                        println!("Integrity error: Node ID {} has no user", node_id);
+                        return false;
+                    }
+                    if *node_id > 1
+                        && (self.array.len() < (node_id ^ 1)
+                            || self.array[(node_id ^ 1) - 1].is_none())
+                    {
+                        println!(
+                            "Integrity error: Node ID {} is a leaf but has no brother",
+                            node_id
+                        );
+                        return false;
+                    }
+                } else {
+                    println!("Integrity error: Node ID {} not found in array", node_id);
+                    return false;
+                }
+            }
+        }
+
+        true
     }
     fn add_node(&mut self, mut right_node: Node) -> usize {
         let min_depth = self
@@ -227,7 +306,7 @@ impl BinaryTree for Tree {
                 //In this case, the tree is empty
                 right_node.id = 1;
                 right_node.depth = 0;
-
+                println!("No min depth found, adding node as root");
                 //self.depth.insert(0, vec![1]);
                 match right_node.user.as_ref() {
                     None => {}
@@ -244,8 +323,10 @@ impl BinaryTree for Tree {
 
     fn merge_nodes(&mut self, node_id_to_delete: usize) -> usize {
         // Objective : delete node_to_delete and merge it's brother in the parent
+
         if node_id_to_delete <= 1 {
             //Then node_to_delete is root
+            self.users.clear();
             self.array.drain(..);
             self.depth.drain();
             return 0;
@@ -270,19 +351,12 @@ impl BinaryTree for Tree {
             .depth
             .get_mut(&node_to_delete.depth)
             .expect("Merged node is not a leaf");
-        old_depth.remove(&brother.id);
+        if old_depth.contains(&brother.id) {
+            old_depth.remove(&brother.id);
+        }
+
         old_depth.remove(&node_to_delete.id);
 
-        let new_depth = self.depth.get_mut(&parent.depth);
-        match new_depth {
-            None => {
-                let layer = HashSet::from([parent.id]);
-                self.depth.insert(parent.depth, layer);
-            }
-            Some(layer) => {
-                layer.insert(parent.id);
-            }
-        };
         //Still need to update the childrens of brother to reflect the correct depth
         let old_id = brother.id;
         let new_id = parent.id;
@@ -299,8 +373,22 @@ impl BinaryTree for Tree {
                 self.users.insert(user.user_id.clone(), brother.id);
             }
         }
+        let old_depth = brother.depth;
         brother.depth = parent.depth;
+
+        if !brother.user.is_none() {
+            self.depth
+                .get_mut(&old_depth)
+                .expect("Old depth not found")
+                .remove(&old_id);
+            self.depth
+                .entry(brother.depth)
+                .or_insert(HashSet::new())
+                .insert(new_id);
+        }
+
         self.array[new_id - 1] = Some(brother);
+
         self.update_children(old_id, new_id);
         new_id
     }
@@ -325,7 +413,7 @@ impl BinaryTree for Tree {
         //return self.array[(node_id - 1) as usize];
         return self.array[node_id - 1].as_ref();
     }
-    fn get_left_child(&self, node_id: usize ) -> &Option<Node> {
+    fn get_left_child(&self, node_id: usize) -> &Option<Node> {
         if self.array.len() >= 2 * node_id {
             &self.array[(2 * node_id - 1) as usize]
         } else {
@@ -343,10 +431,9 @@ impl BinaryTree for Tree {
 
     fn get_parent(&self, node_id: usize) -> &Option<Node> {
         // Implementation to get the parent of a node
-        if node_id <=1  {
+        if node_id <= 1 {
             &None
-        }
-        else if self.array.len() >= node_id / 2 {
+        } else if self.array.len() >= node_id / 2 {
             &self.array[(node_id / 2 - 1) as usize]
         } else {
             &None

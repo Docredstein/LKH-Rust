@@ -7,5 +7,6 @@ edition = "2024"
 colored = "3.1.1"
 openssl = "0.10.78"
 openssl-sys = "0.9.114"
+rand = "0.10.1"
 [features]
 debug = []
