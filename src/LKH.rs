@@ -70,12 +70,22 @@ impl Algorithm {
             Algorithm::AesGcm256 => 32,
         }
     }
+    fn tag_size(&self) -> usize {
+        match self {
+            Algorithm::AesGcm256 => 16,
+        }
+    }
+    fn iv_size(&self) -> usize {
+        match self {
+            Algorithm::AesGcm256 => 32,
+        }
+    }
     fn encrypt(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         match self {
             Algorithm::AesGcm256 => {
                 let mut iv = [0 as u8; 32];
                 rand_bytes(&mut iv).expect("Unable to generate random Bytes");
-                let mut tag = vec![0 as u8; 16];
+                let mut tag = vec![0 as u8; self.tag_size()];
                 match encrypt_aead(
                     Cipher::aes_256_gcm(),
                     key,
@@ -105,6 +115,28 @@ impl Algorithm {
                     Err(e) => None,
                 }
             }
+        }
+    }
+    fn wrap(&self, data: &[u8], key: &[u8], key_id: u64) -> Vec<u8> {
+        let mut ksk_id = key_id.to_be_bytes().to_vec();
+
+        let (iv, tag, cipher) = self.encrypt(key, data, &ksk_id);
+        ksk_id.extend_from_slice(&iv);
+        ksk_id.extend_from_slice(&tag);
+        ksk_id.extend_from_slice(&cipher);
+        ksk_id
+    }
+    fn unwrap(&self, packet: &[u8], keys: &HashMap<u64, Vec<u8>>) -> Option<Vec<u8>> {
+        if packet.len() < (8 + self.iv_size() + self.tag_size()) {
+            None
+        } else {
+            let ksk_id_byte: [u8; 8] = packet[..8].try_into().ok()?;
+            let ksk_id = u64::from_be_bytes(ksk_id_byte);
+            let key = keys.get(&ksk_id)?;
+            let iv = &packet[8..8 + self.iv_size()];
+            let tag = &packet[8 + self.iv_size()..8 + self.iv_size() + self.tag_size()];
+            let cipher = &packet[8 + self.iv_size() + self.tag_size()..];
+            self.decrypt(key, iv, &ksk_id_byte, cipher, tag)
         }
     }
 }
@@ -254,28 +286,10 @@ impl Lkh {
                 }
 
                 let ksk = &node.key;
-                let mut ksk_id = (&node.key_id).to_be_bytes().to_vec();
+                let ksk_id = node.key_id;
 
-                #[cfg(feature = "debug")]
-                {
-                    println!(
-                        "Encrypting packet for child {} with key {:x?}",
-                        node.id, ksk
-                    );
-                }
-                let (iv, tag, cipher) = self.algorithm.encrypt(ksk, &packet, &ksk_id);
-                ksk_id.extend_from_slice(&iv);
-                ksk_id.extend_from_slice(&tag);
-                ksk_id.extend_from_slice(&cipher);
-
-                #[cfg(feature = "debug")]
-                {
-                    println!("IV: {:x?}", iv);
-                    println!("Tag: {:x?}", tag);
-                    println!("Ciphertext: {:x?}", cipher);
-                    println!("Sending group data: {:x?}", ksk_id);
-                }
-                (self.send_group)(ksk_id);
+                let to_send = self.algorithm.wrap(&packet, ksk, ksk_id);
+                (self.send_group)(to_send);
             }
         };
         match self.tree.get_right_child(node_id) {
@@ -286,13 +300,10 @@ impl Lkh {
                     println!("Sending new key to right child : {}", node.id);
                 }
                 let ksk = &node.key;
-                let mut ksk_id = (&node.key_id).to_be_bytes().to_vec();
+                let ksk_id = node.key_id;
 
-                let (iv, tag, cipher) = self.algorithm.encrypt(ksk, &packet, &ksk_id);
-                ksk_id.extend_from_slice(&iv);
-                ksk_id.extend_from_slice(&tag);
-                ksk_id.extend_from_slice(&cipher);
-                (self.send_group)(ksk_id);
+                let to_send = self.algorithm.wrap(&packet, ksk, ksk_id);
+                (self.send_group)(to_send);
             }
         };
     }
@@ -353,11 +364,60 @@ impl Lkh {
     }
 
     pub fn remove_user(&mut self, user_id: &String) {
+        let session_key_id = self
+            .tree
+            .get_root()
+            .expect("Trying to remove a node from an empty tree")
+            .key_id
+            .clone();
+
         let node_id = match self.tree.get_user_node(user_id) {
             None => return,
-            Some(id) => id,
+            Some(id) => id.clone(),
         };
-        let merged_node = self.tree.merge_nodes(*node_id);
+        let node = match self.tree.get_node_by_id(node_id) {
+            None => return,
+            Some(node) => node,
+        };
+        let key_to_delete = node.key.clone();
+        let key_id_to_delete = node.key_id.clone();
+
+        let packet = KeyUpdatePacket {
+            new_key: key_to_delete.clone(),
+            new_key_id: key_id_to_delete,
+            delete_new_key: true,
+            is_session_key: key_id_to_delete == session_key_id,
+        }
+        .to_bytes();
+
+        let to_send = self
+            .algorithm
+            .wrap(&packet, &key_to_delete, key_id_to_delete);
+        (self.send_group)(to_send);
+
+        match self.tree.get_parent(node_id) {
+            None => (),
+            Some(node) => {
+                let key_to_delete = node.key.clone();
+                let key_id_to_delete = node.key_id.clone();
+
+                let packet = KeyUpdatePacket {
+                    new_key: key_to_delete.clone(),
+                    new_key_id: key_id_to_delete,
+                    delete_new_key: true,
+                    is_session_key: key_id_to_delete == session_key_id,
+                }
+                .to_bytes();
+
+                let to_send = self
+                    .algorithm
+                    .wrap(&packet, &key_to_delete, key_id_to_delete);
+                (self.send_group)(to_send);
+            }
+        };
+
+        let merged_node = self.tree.merge_nodes(node_id);
+
         match merged_node {
             0 => (),
             _ => {
@@ -401,16 +461,23 @@ impl TestUser {
                 }
             }
             Some(packet) => {
-                self.keys.insert(packet.new_key_id, packet.new_key);
-                if packet.is_session_key {
-                    self.session_key_id = Some(packet.new_key_id);
-                }
-                #[cfg(feature = "debug")]
-                {
-                    println!(
-                        "User {} updated key {} with new key {}",
-                        self.user_id, packet.new_key_id, packet.new_key_id
-                    );
+                if packet.delete_new_key {
+                    self.keys.remove(&packet.new_key_id);
+                    if packet.is_session_key {
+                        self.session_key_id = None;
+                    }
+                } else {
+                    self.keys.insert(packet.new_key_id, packet.new_key);
+                    if packet.is_session_key {
+                        self.session_key_id = Some(packet.new_key_id);
+                    }
+                    #[cfg(feature = "debug")]
+                    {
+                        println!(
+                            "User {} updated key {} with new key {}",
+                            self.user_id, packet.new_key_id, packet.new_key_id
+                        );
+                    }
                 }
             }
         }
@@ -424,89 +491,44 @@ impl TestUser {
 
             println!("Availables keys: {:?}", self.keys);
         }
-        match &self.algorithm {
-            Algorithm::AesGcm256 => {
-                if data.len() < (8 + 32 + 16) {
-                    #[cfg(feature = "debug")]
-                    {
-                        println!(
-                            "User {} received an invalid packet [Too short] [{} < 56]",
-                            self.user_id,
-                            data.len()
-                        );
-                    }
-                    return;
-                }
-                let mut ksk_id_byte: [u8; 8] = [0; 8];
-                ksk_id_byte.copy_from_slice(&data[..8]);
-                let ksk_id = u64::from_be_bytes(ksk_id_byte);
 
-                if !self.keys.contains_key(&ksk_id) {
-                    #[cfg(feature = "debug")]
-                    {
-                        println!(
-                            "User {} does not have the key {} needed to decrypt the packet",
-                            self.user_id, ksk_id
-                        );
-                    }
+        let packet = self.algorithm.unwrap(&data, &self.keys);
+        if packet.is_none() {
+            return;
+        }
 
-                    return;
-                }
-                let ksk = self.keys.get(&ksk_id).expect("Unexpected missing key");
-                let iv: [u8; 32] = data[8..40]
-                    .try_into()
-                    .expect("Unexpected invalid iv length");
-                let tag = &data[40..56];
-                let cipher = &data[56..];
+        let key_update = KeyUpdatePacket::from_bytes(packet.unwrap());
+        match key_update {
+            None => {
                 #[cfg(feature = "debug")]
                 {
-                    println!("IV: {:x?}", iv);
-                    println!("Tag: {:x?}", tag);
-                    println!("Ciphertext: {:x?}", cipher);
-                    println!(
-                        "User {} is trying to decrypt the packet with key {:x?}",
-                        self.user_id, ksk
-                    );
+                    println!("GROUP : User {} received an invalid packet", self.user_id);
                 }
-
-                let packet =
-                    match self
-                        .algorithm
-                        .decrypt(ksk, &iv, &ksk_id.to_be_bytes(), cipher, tag)
-                    {
-                        Some(plaintext) => plaintext,
-                        None => {
-                            #[cfg(feature = "debug")]
-                            {
-                                println!(
-                                    "User {} failed to decrypt the packet with key {}",
-                                    self.user_id, ksk_id
-                                );
-                            }
-                            return;
-                        }
-                    };
-
-                let key_update = KeyUpdatePacket::from_bytes(packet);
-                match key_update {
-                    None => {
-                        #[cfg(feature = "debug")]
-                        {
-                            println!("GROUP : User {} received an invalid packet", self.user_id);
-                        }
+            }
+            Some(packet) => {
+                if packet.delete_new_key {
+                    self.keys.remove(&packet.new_key_id);
+                    if self.session_key_id == Some(packet.new_key_id) {
+                        self.session_key_id = None;
                     }
-                    Some(packet) => {
-                        self.keys.insert(packet.new_key_id, packet.new_key);
-                        if packet.is_session_key {
-                            self.session_key_id = Some(packet.new_key_id);
-                        }
-                        #[cfg(feature = "debug")]
-                        {
-                            println!(
-                                "GROUP : User {} updated key {} with new key {}",
-                                self.user_id, packet.new_key_id, packet.new_key_id
-                            );
-                        }
+                    #[cfg(feature = "debug")]
+                    {
+                        println!(
+                            "GROUP : User {} deleted key {}",
+                            self.user_id, packet.new_key_id
+                        );
+                    }
+                } else {
+                    self.keys.insert(packet.new_key_id, packet.new_key);
+                    if packet.is_session_key {
+                        self.session_key_id = Some(packet.new_key_id);
+                    }
+                    #[cfg(feature = "debug")]
+                    {
+                        println!(
+                            "GROUP : User {} updated key {} with new key {}",
+                            self.user_id, packet.new_key_id, packet.new_key_id
+                        );
                     }
                 }
             }
@@ -553,6 +575,7 @@ impl TreeTestUser {
             }
         })
     }
+
     fn new_user(&mut self) -> usize {
         let user_id = format!("User{}", self.users.len());
         let keys = HashMap::new();
@@ -890,9 +913,9 @@ mod tests {
         for _ in 0..n {
             users.borrow_mut().new_user();
         }
-        let mut actions = Vec::new();
+        //let mut actions = Vec::new();
         for _ in 0..100000 {
-            println!("Actions : {:?}", actions);
+            //println!("Actions : {:?}", actions);
             let user_id = (rand::random::<u64>() % n) as usize;
             let user_in_vec = users
                 .borrow_mut()
@@ -904,12 +927,12 @@ mod tests {
                 .expect("Unexpectedly not in array")
                 .in_tree
                 .clone();
-            println!("{:?}", lkh.tree.depth);
-            println!("{}", lkh.tree);
+            //println!("{:?}", lkh.tree.depth);
+            //println!("{}", lkh.tree);
             if !in_tree {
                 //Add user
-                println!("Adding User{}", user_id);
-                actions.push(format!("Adding User{}", user_id));
+                //println!("Adding User{}", user_id);
+                //actions.push(format!("Adding User{}", user_id));
                 let unicast_user = users.clone();
                 let unicast_user_id = unicast_user
                     .borrow_mut()
@@ -929,14 +952,70 @@ mod tests {
                     }),
                 );
             } else {
-                println!("Removing User{}", user_id);
+                //println!("Removing User{}", user_id);
 
-                actions.push(format!("Removing User{}", user_id));
+                //actions.push(format!("Removing User{}", user_id));
                 //Remove user
                 lkh.remove_user(&format!("User{}", user_id));
                 users.borrow_mut().remove_user_from_tree(user_id);
             }
             assert!(lkh.tree.verify_integrity());
+        }
+    }
+    #[test]
+    fn random_test_speed() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let n = 32;
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        for _ in 0..n {
+            users.borrow_mut().new_user();
+        }
+
+        for _ in 0..100000 {
+            let user_id = (rand::random::<u64>() % n) as usize;
+            let user_in_vec = users
+                .borrow_mut()
+                .get_user_by_id(&format!("User{}", user_id).to_string())
+                .expect("User unexpectedly not in array");
+            let in_tree = users
+                .borrow_mut()
+                .get_user(user_in_vec)
+                .expect("Unexpectedly not in array")
+                .in_tree
+                .clone();
+
+            if !in_tree {
+                //Add user
+
+                let unicast_user = users.clone();
+                let unicast_user_id = unicast_user
+                    .borrow_mut()
+                    .get_user(user_id)
+                    .expect("invalid id")
+                    .user_id
+                    .clone();
+                users.borrow_mut().add_user_to_tree(user_id);
+                lkh.add_user(
+                    unicast_user_id,
+                    Box::new(move |data| {
+                        unicast_user
+                            .borrow_mut()
+                            .get_user(user_id)
+                            .expect("invalid id")
+                            .receive_single(data)
+                    }),
+                );
+            } else {
+                //Remove user
+                lkh.remove_user(&format!("User{}", user_id));
+                users.borrow_mut().remove_user_from_tree(user_id);
+            }
         }
     }
 }

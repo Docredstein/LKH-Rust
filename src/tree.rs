@@ -131,10 +131,10 @@ impl Tree {
                                 .or_insert(HashSet::new())
                                 .insert(node.id);
                             self.users.insert(user.user_id.clone(), node.id);
-                            println!(
+                            /*println!(
                                 "moving up {} from {} to {}",
                                 user.user_id, old_depth, node.depth
-                            );
+                            ); */
                         }
                     }
 
@@ -169,10 +169,10 @@ impl Tree {
                                 .entry(node.depth)
                                 .or_insert(HashSet::new())
                                 .insert(node.id);
-                            println!(
+                            /*println!(
                                 "moving up {} from {} to {}",
                                 user.user_id, old_depth, node.depth
-                            );
+                            );*/
                         }
                     }
                     old_right_id = old_id;
@@ -182,9 +182,9 @@ impl Tree {
                 }
             }
             if updated_something_flag {
-                println!("Updated left child from {} to {}", old_left_id, new_left_id);
+                //println!("Updated left child from {} to {}", old_left_id, new_left_id);
                 self.update_children(old_left_id, new_left_id);
-                println!("Updated right child from {} to {}", old_right_id, new_right_id);
+                //println!("Updated right child from {} to {}", old_right_id, new_right_id);
                 self.update_children(old_right_id, new_right_id);
             }
         }
