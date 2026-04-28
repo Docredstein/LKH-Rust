@@ -1,5 +1,6 @@
 use crate::node::Node;
 use crate::tree::{BinaryTree, Tree};
+use crate::user::User;
 
 use colored::Colorize;
 use openssl::rand::rand_bytes;
@@ -363,6 +364,50 @@ impl Lkh {
         self.update_keys(new_id, &mut HashSet::new());
     }
 
+    pub fn add_user_vec(&mut self, users: Vec<User>) {
+        let mut already_updated: HashSet<usize> = HashSet::new();
+        //Update in 2 steps, add everyone in the tree then update the keys by starting with the deepest one.
+        let user_ids: Vec<String> = users.iter().map(|u| u.user_id.clone()).collect();
+
+        for user in users {
+            let node = Node {
+                id: 0,
+                key: self.generate_key(),
+                key_id: self.generate_key_id(),
+                user: Some(std::rc::Rc::new(user)),
+                depth: 0,
+            };
+            self.tree.add_node(node);
+        }
+
+        let mut added_nodes: HashMap<u64, Vec<usize>> = HashMap::new();
+        for user_id in user_ids {
+            let node_id = self
+                .tree
+                .get_user_node(&user_id)
+                .expect("Node wasn't successfully inserted");
+            let node = self
+                .tree
+                .get_node_by_id(*node_id)
+                .expect("Node wasn't successfully inserted");
+            added_nodes
+                .entry(node.depth)
+                .or_insert(Vec::new())
+                .push(*node_id);
+        }
+
+        while added_nodes.len() > 0 {
+            let max_depth = added_nodes.iter().map(|(k, _)| k).max().copied();
+            if max_depth.is_none() {
+                break;
+            }
+            let max_depth = max_depth.unwrap();
+            let layer = added_nodes.remove(&max_depth).expect("Missing layer");
+            for node in layer {
+                self.update_keys(node, &mut already_updated);
+            }
+        }
+    }
     pub fn remove_user(&mut self, user_id: &String) {
         let session_key_id = self
             .tree
@@ -1017,5 +1062,50 @@ mod tests {
                 users.borrow_mut().remove_user_from_tree(user_id);
             }
         }
+    }
+
+    #[test]
+    fn add_simple_group() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        let mut users_vec = Vec::new();
+        for i in 0..4 {
+            let user_id = users.borrow_mut().new_user();
+            let unicast_user = users.clone();
+            let unicast_user_id = unicast_user
+                .borrow_mut()
+                .get_user(user_id)
+                .expect("invalid id")
+                .user_id
+                .clone();
+            let func = Box::new(move |data| {
+                unicast_user
+                    .borrow_mut()
+                    .get_user(user_id)
+                    .expect("invalid id")
+                    .receive_single(data)
+            });
+            let user = User {
+                user_id: unicast_user_id,
+                send: func,
+            };
+            users_vec.push(user);
+        }
+
+        lkh.add_user_vec(users_vec);
+        println!("{:?}", lkh);
+        println!("{:?}", users);
+
+
+        let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
+        assert!(users.borrow().check_session_key(rootkeyid));
+        
+        assert!(lkh.tree.verify_integrity());
     }
 }
