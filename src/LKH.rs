@@ -281,14 +281,15 @@ impl Lkh {
         match self.tree.get_left_child(node_id) {
             None => (),
             Some(node) => {
-                #[cfg(feature = "debug")]
-                {
-                    println!("Sending new key to left child : {}", node.id);
-                }
-
                 let ksk = &node.key;
                 let ksk_id = node.key_id;
-
+                #[cfg(feature = "debug")]
+                {
+                    println!(
+                        "Sending new key to left child : {} with key {}",
+                        node.id, ksk_id
+                    );
+                }
                 let to_send = self.algorithm.wrap(&packet, ksk, ksk_id);
                 (self.send_group)(to_send);
             }
@@ -296,13 +297,15 @@ impl Lkh {
         match self.tree.get_right_child(node_id) {
             None => (),
             Some(node) => {
-                #[cfg(feature = "debug")]
-                {
-                    println!("Sending new key to right child : {}", node.id);
-                }
                 let ksk = &node.key;
                 let ksk_id = node.key_id;
-
+                #[cfg(feature = "debug")]
+                {
+                    println!(
+                        "Sending new key to right child : {} with key {}",
+                        node.id, ksk_id
+                    );
+                }
                 let to_send = self.algorithm.wrap(&packet, ksk, ksk_id);
                 (self.send_group)(to_send);
             }
@@ -363,7 +366,76 @@ impl Lkh {
         let new_id = self.tree.add_node(node);
         self.update_keys(new_id, &mut HashSet::new());
     }
+    fn update_keys_by_layer(&mut self, added_nodes: Vec<usize>) {
+        let session_key_id = match self.tree.get_root() {
+            None => None,
+            Some(node) => Some(node.key_id),
+        };
+        let mut to_visit = HashMap::new();
+        let mut already_updated = HashSet::new();
+        for node_id in added_nodes {
+            let node = self
+                .tree
+                .get_node_by_id(node_id)
+                .expect("Not couldn't be added");
+            let packet = KeyUpdatePacket {
+                new_key: node.key.clone(),
+                new_key_id: node.key_id,
+                is_session_key: match session_key_id {
+                    None => false,
+                    Some(id) => id == node.key_id,
+                },
+                delete_new_key: false,
+            }
+            .to_bytes();
 
+            let user = node.user.as_ref().expect("Added node doesn't have a user");
+            (user.send)(packet);
+
+            match self.tree.get_parent(node_id) {
+                None => (),
+                Some(parent) => {
+                    to_visit
+                        .entry(parent.depth)
+                        .or_insert(HashSet::new())
+                        .insert(parent.id);
+                }
+            }
+            already_updated.insert(node_id.clone());
+        }
+
+        while to_visit.len() > 0 {
+            let max_depth = to_visit.iter().map(|(k, _)| k).max().copied();
+            if max_depth.is_none() {
+                break;
+            }
+            let max_depth = max_depth.unwrap();
+            let layer = to_visit.remove(&max_depth).expect("Missing layer");
+            for node_id in layer {
+                if !already_updated.contains(&node_id) {
+                    let new_key = self.generate_key();
+                    let node = self
+                        .tree
+                        .get_node_by_id_mut(node_id)
+                        .expect("Node in path to root doesn't exist");
+                    node.key = new_key;
+
+                    self.send_key_to_children(node_id);
+
+                    match self.tree.get_parent(node_id) {
+                        None => (),
+                        Some(parent) => {
+                            to_visit
+                                .entry(parent.depth)
+                                .or_insert(HashSet::new())
+                                .insert(parent.id);
+                        }
+                    };
+                    already_updated.insert(node_id);
+                }
+            }
+        }
+    }
     pub fn add_user_vec(&mut self, users: Vec<User>) {
         let mut already_updated: HashSet<usize> = HashSet::new();
         //Update in 2 steps, add everyone in the tree then update the keys by starting with the deepest one.
@@ -377,36 +449,27 @@ impl Lkh {
                 user: Some(std::rc::Rc::new(user)),
                 depth: 0,
             };
-            self.tree.add_node(node);
+            let id = self.tree.add_node(node);
+            if (id>1) {
+                let parent_id = self.tree.get_parent(id).as_ref().expect("not root but no parent").id;
+                let parent = self.tree.get_node_by_id_mut(parent_id).expect("not root but no parent").key_id = self.generate_key_id();
+            }
         }
 
-        let mut added_nodes: HashMap<u64, Vec<usize>> = HashMap::new();
+        let mut added_nodes: Vec<usize> = Vec::new();
         for user_id in user_ids {
             let node_id = self
                 .tree
                 .get_user_node(&user_id)
                 .expect("Node wasn't successfully inserted");
-            let node = self
-                .tree
-                .get_node_by_id(*node_id)
-                .expect("Node wasn't successfully inserted");
-            added_nodes
-                .entry(node.depth)
-                .or_insert(Vec::new())
-                .push(*node_id);
+            added_nodes.push(*node_id);
         }
 
-        while added_nodes.len() > 0 {
-            let max_depth = added_nodes.iter().map(|(k, _)| k).max().copied();
-            if max_depth.is_none() {
-                break;
-            }
-            let max_depth = max_depth.unwrap();
-            let layer = added_nodes.remove(&max_depth).expect("Missing layer");
-            for node in layer {
-                self.update_keys(node, &mut already_updated);
-            }
+        #[cfg(feature = "debug")]
+        {
+            println!("Current tree before update {}", self.tree);
         }
+        self.update_keys_by_layer(added_nodes);
     }
     pub fn remove_user(&mut self, user_id: &String) {
         let session_key_id = self
@@ -472,6 +535,7 @@ impl Lkh {
     }
 }
 
+//-------------------------------------TEST-------------------------------------------------
 struct TestUser {
     user_id: String,
     keys: HashMap<u64, Vec<u8>>,
@@ -512,16 +576,16 @@ impl TestUser {
                         self.session_key_id = None;
                     }
                 } else {
-                    self.keys.insert(packet.new_key_id, packet.new_key);
-                    if packet.is_session_key {
-                        self.session_key_id = Some(packet.new_key_id);
-                    }
                     #[cfg(feature = "debug")]
                     {
                         println!(
-                            "User {} updated key {} with new key {}",
-                            self.user_id, packet.new_key_id, packet.new_key_id
+                            "User {} updated key {} with new key {:?}",
+                            self.user_id, packet.new_key_id, packet.new_key
                         );
+                    }
+                    self.keys.insert(packet.new_key_id, packet.new_key);
+                    if packet.is_session_key {
+                        self.session_key_id = Some(packet.new_key_id);
                     }
                 }
             }
@@ -645,6 +709,11 @@ impl TreeTestUser {
     }
     fn add_user_to_tree(&mut self, id: usize) {
         self.users.get_mut(id).expect("Invalid user id").in_tree = true;
+    }
+    fn add_users_to_tree(&mut self, ids: Vec<usize>) {
+        for id in ids {
+            self.add_user_to_tree(id);
+        }
     }
     fn remove_user_from_tree(&mut self, id: usize) {
         self.users.get_mut(id).expect("Invalid user id").in_tree = false;
@@ -959,7 +1028,11 @@ mod tests {
             users.borrow_mut().new_user();
         }
         //let mut actions = Vec::new();
-        for _ in 0..100000 {
+        for i in 0..100000 {
+            if (i % 1000 == 0) {
+                println!("{}", i);
+            }
+
             //println!("Actions : {:?}", actions);
             let user_id = (rand::random::<u64>() % n) as usize;
             let user_in_vec = users
@@ -1022,7 +1095,10 @@ mod tests {
             users.borrow_mut().new_user();
         }
 
-        for _ in 0..100000 {
+        for i in 0..100000 {
+            if (i % 1000 == 0) {
+                println!("{}", i);
+            }
             let user_id = (rand::random::<u64>() % n) as usize;
             let user_in_vec = users
                 .borrow_mut()
@@ -1075,7 +1151,8 @@ mod tests {
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         let mut users_vec = Vec::new();
-        for i in 0..4 {
+        let mut user_id_vec = Vec::new();
+        for _ in 0..4 {
             let user_id = users.borrow_mut().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
@@ -1095,17 +1172,20 @@ mod tests {
                 user_id: unicast_user_id,
                 send: func,
             };
+            user_id_vec.push(user_id);
             users_vec.push(user);
         }
 
         lkh.add_user_vec(users_vec);
+        users.borrow_mut().add_users_to_tree(user_id_vec);
         println!("{:?}", lkh);
         println!("{:?}", users);
 
-
         let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
         assert!(users.borrow().check_session_key(rootkeyid));
-        
+
         assert!(lkh.tree.verify_integrity());
     }
+
+    
 }
