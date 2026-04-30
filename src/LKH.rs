@@ -463,7 +463,7 @@ impl Lkh {
         }
         self.update_keys_by_layer(added_nodes);
     }
-    pub fn remove_user(&mut self, user_id: &String) {
+    pub fn remove_user(&mut self, user_id: &str) {
         let session_key_id = self
             .tree
             .get_root()
@@ -654,8 +654,8 @@ impl TreeTestUser {
     fn get_user(&mut self, id: usize) -> Option<&mut TestUser> {
         self.users.get_mut(id)
     }
-    fn get_user_by_id(&mut self, user_id: &String) -> Option<usize> {
-        self.users.iter().position(|u| &u.user_id == user_id)
+    fn get_user_by_id(&mut self, user_id: &str) -> Option<usize> {
+        self.users.iter().position(|u| u.user_id == user_id)
     }
     fn check_session_key(&self, session_key_id: u64) -> bool {
         self.users.iter().any(|u| {

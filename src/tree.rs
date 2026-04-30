@@ -20,7 +20,7 @@ pub trait BinaryTree {
     fn get_node_by_id_mut(&mut self, node_id: usize) -> Option<&mut Node>;
     fn get_node_by_id(&self, node_id: usize) -> Option<&Node>;
     fn get_root(&self) -> Option<&Node>;
-    fn get_user_node(&self, user_id: &String) -> Option<&usize>;
+    fn get_user_node(&self, user_id: &str) -> Option<&usize>;
     fn get_user_count(&self) -> usize;
     fn verify_integrity(&self) -> bool;
 }
@@ -446,7 +446,7 @@ impl BinaryTree for Tree {
         }
     }
     fn get_root(&self) -> Option<&Node> {
-        if self.array.len() <= 0 {
+        if self.array.is_empty() {
             return None;
         }
         match &self.array[0] {
@@ -455,7 +455,7 @@ impl BinaryTree for Tree {
         }
     }
 
-    fn get_user_node(&self, user_id: &String) -> Option<&usize> {
+    fn get_user_node(&self, user_id: &str) -> Option<&usize> {
         self.users.get(user_id)
     }
 }
