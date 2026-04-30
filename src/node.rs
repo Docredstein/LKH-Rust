@@ -1,5 +1,5 @@
 use std::rc::Rc;
-use std::fmt::{self, write};
+use std::fmt::{self};
 use crate::user::User;
 #[derive(Debug, PartialEq, Eq)]
 pub struct Node {

@@ -47,6 +47,12 @@ impl fmt::Display for Tree {
     }
 }
 
+impl Default for Tree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Tree {
     pub fn new() -> Self {
         Tree {
@@ -116,7 +122,7 @@ impl Tree {
 
                     let old_id = node.id;
                     let new_id = 2 * new_node_id;
-                    let old_depth = node.depth.clone();
+                    let old_depth = node.depth;
                     node.id = new_id;
                     node.depth = parent_depth + 1;
                     match node.user.as_ref() {
@@ -128,7 +134,7 @@ impl Tree {
                                 .remove(&old_id);
                             self.depth
                                 .entry(node.depth)
-                                .or_insert(HashSet::new())
+                                .or_default()
                                 .insert(node.id);
                             self.users.insert(user.user_id.clone(), node.id);
                             /*println!(
@@ -152,7 +158,7 @@ impl Tree {
 
                     let old_id = node.id;
                     let new_id = 2 * new_node_id + 1;
-                    let old_depth = node.depth.clone();
+                    let old_depth = node.depth;
 
                     node.id = new_id;
                     node.depth = parent_depth + 1;
@@ -167,7 +173,7 @@ impl Tree {
                                 .remove(&old_id);
                             self.depth
                                 .entry(node.depth)
-                                .or_insert(HashSet::new())
+                                .or_default()
                                 .insert(node.id);
                             /*println!(
                                 "moving up {} from {} to {}",
@@ -251,13 +257,13 @@ impl BinaryTree for Tree {
 
                 target_depth_set.take(&target_node_id);
 
-                if self.array.len() < (2 * target_node_id + 1) as usize {
-                    self.array.resize((2 * target_node_id + 1) as usize, None);
+                if self.array.len() < (2 * target_node_id + 1) {
+                    self.array.resize(2 * target_node_id + 1 , None);
                 }
 
                 let target_node = self
                     .array
-                    .get_mut((target_node_id - 1) as usize)
+                    .get_mut(target_node_id - 1  )
                     .expect("unallowed access")
                     .as_mut()
                     .expect("Node in self.depth not in array");
@@ -294,8 +300,8 @@ impl BinaryTree for Tree {
                         depth_set.insert(right_node.id);
                     }
                 }
-                let l_id = (left_node.id - 1) as usize;
-                let r_id = (right_node.id - 1) as usize;
+                let l_id = left_node.id - 1 ;
+                let r_id = right_node.id - 1 ;
 
                 self.array[l_id] = Some(left_node);
                 self.array[r_id] = Some(right_node);
@@ -316,7 +322,7 @@ impl BinaryTree for Tree {
                 }
                 self.array.push(Some(right_node));
                 self.depth.insert(0, HashSet::from([1]));
-                return 1;
+                1
             }
         }
     }
@@ -376,14 +382,14 @@ impl BinaryTree for Tree {
         let old_depth = brother.depth;
         brother.depth = parent.depth;
 
-        if !brother.user.is_none() {
+        if brother.user.is_some() {
             self.depth
                 .get_mut(&old_depth)
                 .expect("Old depth not found")
                 .remove(&old_id);
             self.depth
                 .entry(brother.depth)
-                .or_insert(HashSet::new())
+                .or_default()
                 .insert(new_id);
         }
 
@@ -399,11 +405,11 @@ impl BinaryTree for Tree {
         }
 
         //return self.array[(node_id - 1) as usize];
-        return self
+        self
             .array
             .get_mut(node_id - 1)
             .expect("Unexpected id miss")
-            .as_mut();
+            .as_mut()
     }
     fn get_node_by_id(&self, node_id: usize) -> Option<&Node> {
         if (node_id - 1) > self.array.len() {
@@ -411,19 +417,19 @@ impl BinaryTree for Tree {
         }
 
         //return self.array[(node_id - 1) as usize];
-        return self.array[node_id - 1].as_ref();
+        self.array[node_id - 1].as_ref()
     }
     fn get_left_child(&self, node_id: usize) -> &Option<Node> {
         if self.array.len() >= 2 * node_id {
-            &self.array[(2 * node_id - 1) as usize]
+            &self.array[2 * node_id - 1 ]
         } else {
             &None
         }
     }
 
     fn get_right_child(&self, node_id: usize) -> &Option<Node> {
-        if self.array.len() >= 2 * node_id + 1 {
-            &self.array[(2 * node_id) as usize]
+        if self.array.len() > 2 * node_id {
+            &self.array[2 * node_id ]
         } else {
             &None
         }
@@ -434,7 +440,7 @@ impl BinaryTree for Tree {
         if node_id <= 1 {
             &None
         } else if self.array.len() >= node_id / 2 {
-            &self.array[(node_id / 2 - 1) as usize]
+            &self.array[node_id / 2 - 1 ]
         } else {
             &None
         }
@@ -444,7 +450,7 @@ impl BinaryTree for Tree {
             return None;
         }
         match &self.array[0] {
-            Some(node) => Some(&node),
+            Some(node) => Some(node),
             None => None,
         }
     }

@@ -35,7 +35,7 @@ impl KeyUpdatePacket {
     fn to_bytes(&self) -> Vec<u8> {
         let flags: u8 = (self.is_session_key as u8) | ((self.delete_new_key as u8) << 1);
         let mut out = vec![flags];
-        out.extend_from_slice(&self.new_key_id.to_be_bytes().to_vec());
+        out.extend_from_slice(self.new_key_id.to_be_bytes().as_ref());
         out.extend_from_slice(&self.new_key.clone());
         out
     }

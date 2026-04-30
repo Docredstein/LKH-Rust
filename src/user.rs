@@ -5,7 +5,7 @@ pub struct User {
 
 impl std::fmt::Debug for User {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return write!(f, "User [{}]", self.user_id);
+        write!(f, "User [{}]", self.user_id)
     }
 }
 
