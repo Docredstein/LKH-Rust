@@ -132,10 +132,7 @@ impl Tree {
                                 .get_mut(&old_depth)
                                 .expect("Old depth not found")
                                 .remove(&old_id);
-                            self.depth
-                                .entry(node.depth)
-                                .or_default()
-                                .insert(node.id);
+                            self.depth.entry(node.depth).or_default().insert(node.id);
                             self.users.insert(user.user_id.clone(), node.id);
                             /*println!(
                                 "moving up {} from {} to {}",
@@ -171,10 +168,7 @@ impl Tree {
                                 .get_mut(&old_depth)
                                 .expect("Old depth not found")
                                 .remove(&old_id);
-                            self.depth
-                                .entry(node.depth)
-                                .or_default()
-                                .insert(node.id);
+                            self.depth.entry(node.depth).or_default().insert(node.id);
                             /*println!(
                                 "moving up {} from {} to {}",
                                 user.user_id, old_depth, node.depth
@@ -258,12 +252,12 @@ impl BinaryTree for Tree {
                 target_depth_set.take(&target_node_id);
 
                 if self.array.len() < (2 * target_node_id + 1) {
-                    self.array.resize(2 * target_node_id + 1 , None);
+                    self.array.resize(2 * target_node_id + 1, None);
                 }
 
                 let target_node = self
                     .array
-                    .get_mut(target_node_id - 1  )
+                    .get_mut(target_node_id - 1)
                     .expect("unallowed access")
                     .as_mut()
                     .expect("Node in self.depth not in array");
@@ -300,8 +294,8 @@ impl BinaryTree for Tree {
                         depth_set.insert(right_node.id);
                     }
                 }
-                let l_id = left_node.id - 1 ;
-                let r_id = right_node.id - 1 ;
+                let l_id = left_node.id - 1;
+                let r_id = right_node.id - 1;
 
                 self.array[l_id] = Some(left_node);
                 self.array[r_id] = Some(right_node);
@@ -387,10 +381,7 @@ impl BinaryTree for Tree {
                 .get_mut(&old_depth)
                 .expect("Old depth not found")
                 .remove(&old_id);
-            self.depth
-                .entry(brother.depth)
-                .or_default()
-                .insert(new_id);
+            self.depth.entry(brother.depth).or_default().insert(new_id);
         }
 
         self.array[new_id - 1] = Some(brother);
@@ -405,8 +396,7 @@ impl BinaryTree for Tree {
         }
 
         //return self.array[(node_id - 1) as usize];
-        self
-            .array
+        self.array
             .get_mut(node_id - 1)
             .expect("Unexpected id miss")
             .as_mut()
@@ -421,7 +411,7 @@ impl BinaryTree for Tree {
     }
     fn get_left_child(&self, node_id: usize) -> &Option<Node> {
         if self.array.len() >= 2 * node_id {
-            &self.array[2 * node_id - 1 ]
+            &self.array[2 * node_id - 1]
         } else {
             &None
         }
@@ -429,7 +419,7 @@ impl BinaryTree for Tree {
 
     fn get_right_child(&self, node_id: usize) -> &Option<Node> {
         if self.array.len() > 2 * node_id {
-            &self.array[2 * node_id ]
+            &self.array[2 * node_id]
         } else {
             &None
         }
@@ -440,7 +430,7 @@ impl BinaryTree for Tree {
         if node_id <= 1 {
             &None
         } else if self.array.len() >= node_id / 2 {
-            &self.array[node_id / 2 - 1 ]
+            &self.array[node_id / 2 - 1]
         } else {
             &None
         }
