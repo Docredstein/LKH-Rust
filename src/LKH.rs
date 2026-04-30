@@ -2,12 +2,10 @@ use crate::node::Node;
 use crate::tree::{BinaryTree, Tree};
 use crate::user::User;
 
-use colored::Colorize;
 use openssl::rand::rand_bytes;
 use openssl::symm::{Cipher, decrypt_aead, encrypt_aead};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::ops::Index;
 
 #[derive(Debug, PartialEq, Eq)]
 enum Algorithm {
@@ -37,8 +35,8 @@ impl KeyUpdatePacket {
     fn to_bytes(&self) -> Vec<u8> {
         let flags: u8 = (self.is_session_key as u8) | ((self.delete_new_key as u8) << 1);
         let mut out = vec![flags];
-        out.extend_from_slice(&mut self.new_key_id.to_be_bytes().to_vec());
-        out.extend_from_slice(&mut self.new_key.clone());
+        out.extend_from_slice(&self.new_key_id.to_be_bytes().to_vec());
+        out.extend_from_slice(&self.new_key.clone());
         out
     }
 
@@ -56,9 +54,9 @@ impl KeyUpdatePacket {
             let key = packet[9..].to_vec();
 
             Some(KeyUpdatePacket {
-                is_session_key: is_session_key,
+                is_session_key,
                 new_key: key,
-                delete_new_key: delete_new_key,
+                delete_new_key,
                 new_key_id: id,
             })
         }
@@ -84,9 +82,9 @@ impl Algorithm {
     fn encrypt(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         match self {
             Algorithm::AesGcm256 => {
-                let mut iv = [0 as u8; 32];
+                let mut iv = [0_u8; 32];
                 rand_bytes(&mut iv).expect("Unable to generate random Bytes");
-                let mut tag = vec![0 as u8; self.tag_size()];
+                let mut tag = vec![0_u8; self.tag_size()];
                 match encrypt_aead(
                     Cipher::aes_256_gcm(),
                     key,
@@ -111,10 +109,7 @@ impl Algorithm {
     ) -> Option<Vec<u8>> {
         match self {
             Algorithm::AesGcm256 => {
-                match decrypt_aead(Cipher::aes_256_gcm(), key, Some(iv), aad, ciphertext, tag) {
-                    Ok(plaintext) => Some(plaintext),
-                    Err(e) => None,
-                }
+                decrypt_aead(Cipher::aes_256_gcm(), key, Some(iv), aad, ciphertext, tag).ok()
             }
         }
     }
@@ -150,13 +145,13 @@ pub struct Lkh {
 
 impl std::fmt::Debug for Lkh {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return write!(
+        write!(
             f,
             "LKH Tree of {} users using [{}] : \n{}",
             self.tree.get_user_count(),
             self.algorithm,
             self.tree
-        );
+        )
     }
 }
 
@@ -183,7 +178,7 @@ impl Lkh {
             .tree
             .get_node_by_id(node_id)
             .as_ref()
-            .map_or(false, |node| node.user.is_some());
+            .is_some_and(|node| node.user.is_some());
         let mut path: Vec<(u64, Vec<u8>)> = Vec::new();
 
         //We also need to update the parent key_id, assuming that there is a parent
@@ -206,7 +201,7 @@ impl Lkh {
                         .get_node_by_id(current_id)
                         .expect("Node not found");
 
-                    let keyid = node.key_id.clone();
+                    let keyid = node.key_id;
                     let key = node.key.clone();
 
                     let next_id = self.tree.get_parent(current_id).as_ref().map(|n| n.id);
@@ -225,7 +220,7 @@ impl Lkh {
             match current {
                 None => break,
                 Some(node) => {
-                    let old_key = node.key.clone();
+                    let _old_key = node.key.clone();
 
                     path.push((node.key_id, new_key.clone()));
                     node.key = new_key;
@@ -271,7 +266,7 @@ impl Lkh {
         };
 
         let packet = KeyUpdatePacket {
-            new_key: new_key,
+            new_key,
             new_key_id: key_id,
             is_session_key: key_id == session_key_id,
             delete_new_key: false,
@@ -367,10 +362,7 @@ impl Lkh {
         self.update_keys(new_id, &mut HashSet::new());
     }
     fn update_keys_by_layer(&mut self, added_nodes: Vec<usize>) {
-        let session_key_id = match self.tree.get_root() {
-            None => None,
-            Some(node) => Some(node.key_id),
-        };
+        let session_key_id = self.tree.get_root().map(|node| node.key_id);
         let mut to_visit = HashMap::new();
         let mut already_updated = HashSet::new();
         for node_id in added_nodes {
@@ -401,11 +393,11 @@ impl Lkh {
                         .insert(parent.id);
                 }
             }
-            already_updated.insert(node_id.clone());
+            already_updated.insert(node_id);
         }
 
-        while to_visit.len() > 0 {
-            let max_depth = to_visit.iter().map(|(k, _)| k).max().copied();
+        while !to_visit.is_empty() {
+            let max_depth = to_visit.keys().max().copied();
             if max_depth.is_none() {
                 break;
             }
@@ -437,7 +429,7 @@ impl Lkh {
         }
     }
     pub fn add_user_vec(&mut self, users: Vec<User>) {
-        let mut already_updated: HashSet<usize> = HashSet::new();
+        let _already_updated: HashSet<usize> = HashSet::new();
         //Update in 2 steps, add everyone in the tree then update the keys by starting with the deepest one.
         let user_ids: Vec<String> = users.iter().map(|u| u.user_id.clone()).collect();
 
@@ -450,9 +442,9 @@ impl Lkh {
                 depth: 0,
             };
             let id = self.tree.add_node(node);
-            if (id>1) {
+            if id>1  {
                 let parent_id = self.tree.get_parent(id).as_ref().expect("not root but no parent").id;
-                let parent = self.tree.get_node_by_id_mut(parent_id).expect("not root but no parent").key_id = self.generate_key_id();
+                self.tree.get_node_by_id_mut(parent_id).expect("not root but no parent").key_id = self.generate_key_id();
             }
         }
 
@@ -476,19 +468,18 @@ impl Lkh {
             .tree
             .get_root()
             .expect("Trying to remove a node from an empty tree")
-            .key_id
-            .clone();
+            .key_id;
 
         let node_id = match self.tree.get_user_node(user_id) {
             None => return,
-            Some(id) => id.clone(),
+            Some(id) => *id,
         };
         let node = match self.tree.get_node_by_id(node_id) {
             None => return,
             Some(node) => node,
         };
         let key_to_delete = node.key.clone();
-        let key_id_to_delete = node.key_id.clone();
+        let key_id_to_delete = node.key_id;
 
         let packet = KeyUpdatePacket {
             new_key: key_to_delete.clone(),
@@ -507,7 +498,7 @@ impl Lkh {
             None => (),
             Some(node) => {
                 let key_to_delete = node.key.clone();
-                let key_id_to_delete = node.key_id.clone();
+                let key_id_to_delete = node.key_id;
 
                 let packet = KeyUpdatePacket {
                     new_key: key_to_delete.clone(),
@@ -555,7 +546,7 @@ impl fmt::Debug for TestUser {
             let hexkey: String = key.iter().map(|b| format!("{:02x}", b)).collect(); //Gemini
             write!(f, "Key {} : {}", key_id, hexkey).ok();
         }
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -655,7 +646,7 @@ impl fmt::Debug for TreeTestUser {
         for user in self.users.iter() {
             write!(f, "\n\t{:?}", user).ok();
         }
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -670,18 +661,7 @@ impl TreeTestUser {
         self.users.iter().any(|u| {
             if u.in_tree && u.session_key_id == Some(session_key_id) {
                 true
-            } else if !u.in_tree && u.session_key_id != Some(session_key_id) {
-                true
-            } else {
-                #[cfg(feature = "debug")]
-                {
-                    println!(
-                        "User {} is in tree : {}, session key id : {:?}, expected session key id : {}",
-                        u.user_id, u.in_tree, u.session_key_id, session_key_id
-                    );
-                }
-                false
-            }
+            } else { !u.in_tree && u.session_key_id != Some(session_key_id) }
         })
     }
 
@@ -689,8 +669,8 @@ impl TreeTestUser {
         let user_id = format!("User{}", self.users.len());
         let keys = HashMap::new();
         let test_user = TestUser {
-            user_id: user_id,
-            keys: keys,
+            user_id,
+            keys,
             algorithm: Algorithm::AesGcm256,
             session_key_id: None,
             in_tree: false,
