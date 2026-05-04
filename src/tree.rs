@@ -1,6 +1,7 @@
 use crate::node::Node;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
+
 pub trait BinaryTree {
     type Node;
     /// Ownership of right_node will be transfered to the tree
@@ -28,7 +29,7 @@ pub trait BinaryTree {
 pub struct Tree {
     //root: Option<Node>,
     //nodes: HashMap<u64, &'a Node>, //Association between nodeID and node
-    pub depth: HashMap<u64, HashSet<usize>>, //Association between depth (0 being root) and the set of leaves at that depth
+    pub depth: HashMap<u64, BTreeSet<usize>>, //Association between depth (0 being root) and the set of leaves at that depth
     users: HashMap<String, usize>, //Association between userID and node, not ideal, should be in LKH
     array: Vec<Option<Node>>,
 }
@@ -96,96 +97,123 @@ impl Tree {
             None => Ok(()),
         }
     }
+    //gemini
+    pub fn to_dot(&self) {
+        println!("digraph BinaryTree {{");
+        println!("  node [fontname=\"Arial\"];");
+
+        for (i, val) in self.array.iter().enumerate() {
+            if val.is_some() {
+                let id = i + 1; // 1-based logic as per your description
+                let left = 2 * id;
+                let right = 2 * id + 1;
+
+                // Draw the current node
+                println!(
+                    "  {} [label=\"ID: {}\\n{}\"];",
+                    id,
+                    id,
+                    val.as_ref().unwrap()
+                );
+
+                // Link to left child (if it exists in the array)
+                if left <= self.array.len() {
+                    println!("  {} -> {} [label=\"L\"];", id, left);
+                }
+
+                // Link to right child (if it exists in the array)
+                if right <= self.array.len() {
+                    println!("  {} -> {} [label=\"R\"];", id, right);
+                }
+            }
+        }
+
+        println!("}}");
+    }
 
     fn update_children(&mut self, old_node_id: usize, new_node_id: usize) {
         //We suppose that the current node is correct, we may need to update it's children
-        if self.array.len() >= 2 * old_node_id {
-            let parent_depth = self.array[new_node_id - 1]
-                .as_ref()
-                .expect("Invalid node update")
-                .depth;
 
-            //left
-            let mut updated_something_flag = false;
-            let mut old_right_id = 0;
-            let mut new_right_id = 0;
+        //let direction = old_node_id % 2;
+        let mut queue = VecDeque::new();
 
-            let mut old_left_id = 0;
-            let mut new_left_id = 0;
+        queue.push_back((old_node_id, new_node_id));
 
-            match self.array[2 * old_node_id - 1] {
-                None => {}
-                _ => {
-                    let mut node = self.array[2 * old_node_id - 1]
-                        .take()
-                        .expect("Unexpected none");
+        while !queue.is_empty() {
+            let (old_node_id, new_node_id) = queue.pop_front().unwrap();
+            if self.array.len() >= 2 * old_node_id {
+                let parent_depth = self.array[new_node_id - 1]
+                    .as_ref()
+                    .expect("Invalid node update")
+                    .depth;
 
-                    let old_id = node.id;
-                    let new_id = 2 * new_node_id;
-                    let old_depth = node.depth;
-                    node.id = new_id;
-                    node.depth = parent_depth + 1;
-                    match node.user.as_ref() {
-                        None => {}
-                        Some(user) => {
-                            self.depth
-                                .get_mut(&old_depth)
-                                .expect("Old depth not found")
-                                .remove(&old_id);
-                            self.depth.entry(node.depth).or_default().insert(node.id);
-                            self.users.insert(user.user_id.clone(), node.id);
-                            /*println!(
-                                "moving up {} from {} to {}",
-                                user.user_id, old_depth, node.depth
-                            ); */
+                //left
+
+                match self.array[2 * old_node_id - 1] {
+                    None => {}
+                    _ => {
+                        let mut node = self.array[2 * old_node_id - 1]
+                            .take()
+                            .expect("Unexpected none");
+
+                        let old_id = node.id;
+                        let new_id = 2 * new_node_id;
+                        let old_depth = node.depth;
+                        node.id = new_id;
+                        node.depth = parent_depth + 1;
+                        match node.user.as_ref() {
+                            None => {}
+                            Some(user) => {
+                                self.depth
+                                    .get_mut(&old_depth)
+                                    .expect("Old depth not found")
+                                    .remove(&old_id);
+                                self.depth.entry(node.depth).or_default().insert(node.id);
+                                self.users.insert(user.user_id.clone(), node.id);
+                                /*println!(
+                                    "moving up {} from {} to {}",
+                                    user.user_id, old_depth, node.depth
+                                ); */
+                            }
                         }
+
+                        self.array[new_id - 1] = Some(node);
+                        queue.push_back((old_id, new_id));
                     }
-
-                    self.array[new_id - 1] = Some(node);
-                    old_left_id = old_id;
-                    new_left_id = new_id;
-                    updated_something_flag = true;
                 }
-            }
-            //right
-            match self.array[2 * old_node_id] {
-                None => {}
-                _ => {
-                    let mut node = self.array[2 * old_node_id].take().expect("Unexpected none");
+                //right
+                match self.array[2 * old_node_id] {
+                    None => {}
+                    _ => {
+                        let mut node = self.array[2 * old_node_id].take().expect("Unexpected none");
 
-                    let old_id = node.id;
-                    let new_id = 2 * new_node_id + 1;
-                    let old_depth = node.depth;
+                        let old_id = node.id;
+                        let new_id = 2 * new_node_id + 1;
+                        let old_depth = node.depth;
 
-                    node.id = new_id;
-                    node.depth = parent_depth + 1;
+                        node.id = new_id;
+                        node.depth = parent_depth + 1;
 
-                    match node.user.as_ref() {
-                        None => {}
-                        Some(user) => {
-                            self.users.insert(user.user_id.clone(), node.id);
-                            self.depth
-                                .get_mut(&old_depth)
-                                .expect("Old depth not found")
-                                .remove(&old_id);
-                            self.depth.entry(node.depth).or_default().insert(node.id);
-                            /*println!(
-                                "moving up {} from {} to {}",
-                                user.user_id, old_depth, node.depth
-                            );*/
+                        match node.user.as_ref() {
+                            None => {}
+                            Some(user) => {
+                                self.users.insert(user.user_id.clone(), node.id);
+                                self.depth
+                                    .get_mut(&old_depth)
+                                    .expect("Old depth not found")
+                                    .remove(&old_id);
+                                self.depth.entry(node.depth).or_default().insert(node.id);
+                                /*println!(
+                                    "moving up {} from {} to {}",
+                                    user.user_id, old_depth, node.depth
+                                );*/
+                            }
                         }
+
+                        self.array[new_id - 1] = Some(node);
+                        queue.push_back((old_id, new_id));
                     }
-                    old_right_id = old_id;
-                    new_right_id = new_id;
-                    updated_something_flag = true;
-                    self.array[new_id - 1] = Some(node);
                 }
-            }
-            if updated_something_flag {
-                //println!("Updated left child from {} to {}", old_left_id, new_left_id);
-                self.update_children(old_left_id, new_left_id);
-                //println!("Updated right child from {} to {}", old_right_id, new_right_id);
-                self.update_children(old_right_id, new_right_id);
             }
         }
     }
@@ -286,7 +314,7 @@ impl BinaryTree for Tree {
                 match new_depth {
                     None => {
                         //let depth_set = vec![left_node.id, right_node.id];
-                        let depth_set = HashSet::from([left_node.id, right_node.id]);
+                        let depth_set = BTreeSet::from([left_node.id, right_node.id]);
                         self.depth.insert(target_depth + 1, depth_set);
                     }
                     Some(depth_set) => {
@@ -315,7 +343,7 @@ impl BinaryTree for Tree {
                     }
                 }
                 self.array.push(Some(right_node));
-                self.depth.insert(0, HashSet::from([1]));
+                self.depth.insert(0, BTreeSet::from([1]));
                 1
             }
         }
@@ -478,6 +506,7 @@ mod tests {
         };
         a.add_node(node2);
         println!("{}", a);
+        a.to_dot();
     }
 
     #[test]
@@ -493,6 +522,7 @@ mod tests {
             };
             a.add_node(node);
             print!("{}", a);
+            a.to_dot();
         }
     }
     #[test]

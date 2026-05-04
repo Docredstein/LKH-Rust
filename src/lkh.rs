@@ -195,6 +195,7 @@ impl Lkh {
 
         loop {
             if already_updated.contains(&current_id) {
+                println!("In untestedbranch");
                 let (keyid, key, parent_id) = {
                     let node = self
                         .tree
@@ -442,9 +443,17 @@ impl Lkh {
                 depth: 0,
             };
             let id = self.tree.add_node(node);
-            if id>1  {
-                let parent_id = self.tree.get_parent(id).as_ref().expect("not root but no parent").id;
-                self.tree.get_node_by_id_mut(parent_id).expect("not root but no parent").key_id = self.generate_key_id();
+            if id > 1 {
+                let parent_id = self
+                    .tree
+                    .get_parent(id)
+                    .as_ref()
+                    .expect("not root but no parent")
+                    .id;
+                self.tree
+                    .get_node_by_id_mut(parent_id)
+                    .expect("not root but no parent")
+                    .key_id = self.generate_key_id();
             }
         }
 
@@ -661,10 +670,20 @@ impl TreeTestUser {
         self.users.iter().any(|u| {
             if u.in_tree && u.session_key_id == Some(session_key_id) {
                 true
-            } else { !u.in_tree && u.session_key_id != Some(session_key_id) }
+            } else {
+                !u.in_tree && u.session_key_id != Some(session_key_id)
+            }
         })
     }
-
+    fn print_users_in_tree(&self) {
+        let ids: Vec<String> = self
+            .users
+            .iter()
+            .filter(|u| u.in_tree)
+            .map(|u| u.user_id.clone())
+            .collect();
+        println!("Users in tree : {:?}", ids,);
+    }
     fn new_user(&mut self) -> usize {
         let user_id = format!("User{}", self.users.len());
         let keys = HashMap::new();
@@ -699,10 +718,47 @@ impl TreeTestUser {
         self.users.get_mut(id).expect("Invalid user id").in_tree = false;
     }
 }
+
+fn verify_key_chain(tree: &Lkh, users: &TreeTestUser) -> bool {
+    for user in users.users.iter() {
+        let user_id = user.user_id.clone();
+        let keys = &user.keys;
+        let mut key_count = 0;
+        let mut node_id = tree.tree.get_user_node(&user_id).and_then(|u| Some(*u));
+
+        loop {
+            if node_id.is_none() {
+                break;
+            }
+            let id = node_id.unwrap();
+            let node = tree.tree.get_node_by_id(id);
+            if node.is_none() {
+                println!("Cannot find node using this id {}", id);
+                return false;
+            }
+            let node = node.unwrap();
+            let key = &node.key;
+            let key_id = &node.key_id;
+            if !(keys.contains_key(key_id) && keys[key_id] == *key) {
+                return false;
+            }
+            key_count += 1;
+            node_id = tree.tree.get_parent(id).as_ref().and_then(|u| Some(u.id));
+        }
+        if (key_count > keys.len()) {
+            //If a key is repeated multiple time in the path to root
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
 
     use std::{cell::RefCell, rc::Rc};
+
+    use rand::{RngExt, SeedableRng};
 
     use super::*;
     #[test]
@@ -740,7 +796,24 @@ mod tests {
         println!("Original : {:x?}", plaintext);
         println!("Decrypted: {:x?}", decrypted);
     }
+    #[test]
+    fn test_update_on_already_updated_node() {
+        let tree = Tree::new();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(|data| println!("recieved group data: {:x?}", data)),
+        };
+        println!("{:?}", lkh);
 
+        lkh.add_user(
+            "User0".to_string(),
+            Box::new(|data| println!("Recieved privately : {:x?}", data)),
+        );
+        println!("{:?}", lkh);
+        let mut already_updated = HashSet::from([1 as usize]);
+        lkh.update_keys(1, &mut already_updated);
+    }
     #[test]
     fn test_add_one_user() {
         let tree = Tree::new();
@@ -816,6 +889,7 @@ mod tests {
 
         println!("{:?}", lkh);
         println!("{:?}", users);
+        assert!(verify_key_chain(&lkh, &*users.borrow()));
     }
     #[test]
     fn test_adding_three_user_realist() {
@@ -854,6 +928,7 @@ mod tests {
         println!("{:?}", users);
         let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
         assert!(users.borrow().check_session_key(rootkeyid));
+        assert!(verify_key_chain(&lkh, &*users.borrow()));
     }
 
     #[test]
@@ -893,6 +968,9 @@ mod tests {
         println!("{:?}", users);
         let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
         assert!(users.borrow().check_session_key(rootkeyid));
+        assert!(verify_key_chain(&lkh, &*users.borrow()));
+
+        lkh.tree.to_dot();
     }
 
     #[test]
@@ -939,6 +1017,7 @@ mod tests {
         println!("{:?}", users);
         let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
         assert!(users.borrow().check_session_key(rootkeyid));
+        assert!(verify_key_chain(&lkh, &*users.borrow()));
     }
 
     #[test]
@@ -973,6 +1052,7 @@ mod tests {
             );
             let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
             assert!(users.borrow().check_session_key(rootkeyid));
+            assert!(verify_key_chain(&lkh, &*users.borrow()));
         }
         println!("{:?}", lkh);
         println!("{:?}", users);
@@ -989,12 +1069,14 @@ mod tests {
                 assert!(users.borrow().check_session_key(rootkeyid));
             }
         }
+        assert!(verify_key_chain(&lkh, &*users.borrow()));
         println!("After removing all users");
         println!("{:?}", lkh);
         println!("{:?}", users);
     }
     #[test]
     fn random_test() {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
         let tree = Tree::new();
         let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
         let users_lkh = users.clone();
@@ -1010,11 +1092,12 @@ mod tests {
         //let mut actions = Vec::new();
         for i in 0..100000 {
             if (i % 1000 == 0) {
-                println!("{}", i);
+                //println!("{}", i);
+                //users.borrow().print_users_in_tree();
             }
 
             //println!("Actions : {:?}", actions);
-            let user_id = (rand::random::<u64>() % n) as usize;
+            let user_id = rng.random_range(0..n) as usize;
             let user_in_vec = users
                 .borrow_mut()
                 .get_user_by_id(&format!("User{}", user_id).to_string())
@@ -1027,6 +1110,7 @@ mod tests {
                 .clone();
             //println!("{:?}", lkh.tree.depth);
             //println!("{}", lkh.tree);
+
             if !in_tree {
                 //Add user
                 //println!("Adding User{}", user_id);
@@ -1057,7 +1141,13 @@ mod tests {
                 lkh.remove_user(&format!("User{}", user_id));
                 users.borrow_mut().remove_user_from_tree(user_id);
             }
-            assert!(lkh.tree.verify_integrity());
+            users.borrow().print_users_in_tree();
+            if !(lkh.tree.verify_integrity() && verify_key_chain(&lkh, &*users.borrow())) {
+                println!("{:?}", lkh.tree.depth);
+                println!("{}", lkh.tree);
+
+                panic!();
+            }
         }
     }
     #[test]
@@ -1163,9 +1253,88 @@ mod tests {
 
         let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
         assert!(users.borrow().check_session_key(rootkeyid));
-
+        assert!(verify_key_chain(&lkh, &*users.borrow()));
         assert!(lkh.tree.verify_integrity());
     }
+    #[test]
+    fn add_successive_group() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        let mut users_vec = Vec::new();
+        let mut user_id_vec = Vec::new();
+        for _ in 0..4 {
+            let user_id = users.borrow_mut().new_user();
+            let unicast_user = users.clone();
+            let unicast_user_id = unicast_user
+                .borrow_mut()
+                .get_user(user_id)
+                .expect("invalid id")
+                .user_id
+                .clone();
+            let func = Box::new(move |data| {
+                unicast_user
+                    .borrow_mut()
+                    .get_user(user_id)
+                    .expect("invalid id")
+                    .receive_single(data)
+            });
+            let user = User {
+                user_id: unicast_user_id,
+                send: func,
+            };
+            user_id_vec.push(user_id);
+            users_vec.push(user);
+        }
 
-    
+        lkh.add_user_vec(users_vec);
+        users.borrow_mut().add_users_to_tree(user_id_vec);
+        println!("{:?}", lkh);
+        println!("{:?}", users);
+
+        let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
+        assert!(users.borrow().check_session_key(rootkeyid));
+        assert!(verify_key_chain(&lkh, &*users.borrow()));
+        assert!(lkh.tree.verify_integrity());
+
+        let mut users_vec = Vec::new();
+        let mut user_id_vec = Vec::new();
+        for _ in 0..15 {
+            let user_id = users.borrow_mut().new_user();
+            let unicast_user = users.clone();
+            let unicast_user_id = unicast_user
+                .borrow_mut()
+                .get_user(user_id)
+                .expect("invalid id")
+                .user_id
+                .clone();
+            let func = Box::new(move |data| {
+                unicast_user
+                    .borrow_mut()
+                    .get_user(user_id)
+                    .expect("invalid id")
+                    .receive_single(data)
+            });
+            let user = User {
+                user_id: unicast_user_id,
+                send: func,
+            };
+            user_id_vec.push(user_id);
+            users_vec.push(user);
+        }
+        lkh.add_user_vec(users_vec);
+        users.borrow_mut().add_users_to_tree(user_id_vec);
+        println!("{:?}", lkh);
+        println!("{:?}", users);
+
+        let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
+        assert!(users.borrow().check_session_key(rootkeyid));
+        assert!(verify_key_chain(&lkh, &*users.borrow()));
+        assert!(lkh.tree.verify_integrity());
+    }
 }
