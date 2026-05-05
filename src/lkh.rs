@@ -547,8 +547,7 @@ impl LogicalTree for Lkh {
     }
     fn get_session_key(&self) -> Option<(u64, &[u8])> {
         self.tree
-            .get_root()
-            .and_then(|u| Some((u.key_id, u.key.as_slice())))
+            .get_root().map(|u| (u.key_id, u.key.as_slice()))
     }
 }
 #[derive(Debug)]
@@ -564,14 +563,14 @@ impl LogicalTree for LKHPlus {
     fn get_session_key(&self) -> Option<(u64, &[u8])> {
         if self.lkh.get_user_count() > 0 {
             self.lkh.get_session_key()
-        } else if self.unordered_users.len() > 0 {
+        } else if !self.unordered_users.is_empty() {
             Some((self.temporary_key_id, self.temporary_key.as_slice()))
         } else {
             None
         }
     }
 
-    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) -> () {
+    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) {
         let new_user = User {
             user_id: user_id.clone(),
             send,
@@ -613,7 +612,7 @@ impl LogicalTree for LKHPlus {
             self.unordered_users.insert(user_id, new_user);
         }
     }
-    fn remove_user(&mut self, user_id: &str) -> () {
+    fn remove_user(&mut self, user_id: &str) {
         let (key, key_id) = if self.unordered_users.contains_key(user_id) {
             let user = self.unordered_users.remove(user_id);
             if user.is_none() {
@@ -655,7 +654,7 @@ impl LogicalTree for LKHPlus {
             delete_new_key: false,
         }
         .to_bytes();
-        for (user_id, user) in self.unordered_users.iter() {
+        for (_user_id, user) in self.unordered_users.iter() {
             (user.send)(packet.clone())
         }
     }
@@ -850,7 +849,7 @@ fn verify_key_chain(tree: &Lkh, users: &TreeTestUser) -> bool {
         let user_id = user.user_id.clone();
         let keys = &user.keys;
         let mut key_count = 0;
-        let mut node_id = tree.tree.get_user_node(&user_id).and_then(|u| Some(*u));
+        let mut node_id = tree.tree.get_user_node(&user_id).copied();
 
         loop {
             if node_id.is_none() {
@@ -860,7 +859,7 @@ fn verify_key_chain(tree: &Lkh, users: &TreeTestUser) -> bool {
             let node = tree.tree.get_node_by_id(id);
             if node.is_none() {
                 println!("Cannot find node using this id {}", id);
-                return false;
+                return false; 
             }
             let node = node.unwrap();
             let key = &node.key;
@@ -869,9 +868,9 @@ fn verify_key_chain(tree: &Lkh, users: &TreeTestUser) -> bool {
                 return false;
             }
             key_count += 1;
-            node_id = tree.tree.get_parent(id).as_ref().and_then(|u| Some(u.id));
+            node_id = tree.tree.get_parent(id).as_ref().map(|u| u.id);
         }
-        if (key_count > keys.len()) {
+        if key_count > keys.len()  {
             //If a key is repeated multiple time in the path to root
             return false;
         }

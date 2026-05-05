@@ -1,5 +1,5 @@
 use crate::node::Node;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
 
 pub trait BinaryTree {
@@ -26,6 +26,7 @@ pub trait BinaryTree {
     fn verify_integrity(&self) -> bool;
 }
 #[derive(Debug)]
+#[derive(Default)]
 pub struct Tree {
     //root: Option<Node>,
     //nodes: HashMap<u64, &'a Node>, //Association between nodeID and node
@@ -48,15 +49,6 @@ impl fmt::Display for Tree {
     }
 }
 
-impl Default for Tree {
-    fn default() -> Self {
-        Tree {
-            depth: HashMap::new(),
-            users: HashMap::new(),
-            array: Vec::new(),
-        }
-    }
-}
 
 impl Tree {
     pub fn new() -> Self {
