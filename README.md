@@ -32,3 +32,10 @@ If possible, `KSK id` should be authentified by using AAD.
 +-----------+-----------+----------+------------+
 ```
 
+### Tree constraint : 
+Each node in the tree must follow these constraint : 
+- a node is a leaf <=> the node has a user
+- a node isn't a leaf <=> the node has 2 children 
+- The key id follow the node during topological change
+- the id denote the place of the node in the tree
+- the id is defined recursively as : $$id_{Root}=1$$  $$id_{Left  Child} = 2* id_{Parent}$$ $$id_{Right  Child} = 2* id_{Parent} +1 $$

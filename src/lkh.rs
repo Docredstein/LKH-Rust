@@ -7,6 +7,12 @@ use openssl::symm::{Cipher, decrypt_aead, encrypt_aead};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+pub trait LogicalTree {
+    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) -> ();
+    fn remove_user(&mut self, user_id: &str) -> ();
+    fn get_session_key(&self) -> Option<(u64, &[u8])>;
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Algorithm {
     AesGcm256,
@@ -218,16 +224,19 @@ impl Lkh {
             }
             let new_key = self.generate_key();
             let current = self.tree.get_node_by_id_mut(current_id);
-            match current {
+            let is_leaf = match current {
                 None => break,
                 Some(node) => {
                     let _old_key = node.key.clone();
 
                     path.push((node.key_id, new_key.clone()));
                     node.key = new_key;
+                    node.user.is_some()
                 }
+            };
+            if !is_leaf {
+                self.send_key_to_children(current_id);
             }
-            self.send_key_to_children(current_id);
 
             current_id = match self.tree.get_parent(current_id) {
                 None => break,
@@ -347,21 +356,6 @@ impl Lkh {
         }
     }
 
-    pub fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) {
-        let user = crate::user::User {
-            user_id: user_id.clone(),
-            send,
-        };
-        let node = Node {
-            id: 0,
-            key: self.generate_key(),
-            key_id: self.generate_key_id(),
-            user: Some(std::rc::Rc::new(user)),
-            depth: 0,
-        };
-        let new_id = self.tree.add_node(node);
-        self.update_keys(new_id, &mut HashSet::new());
-    }
     fn update_keys_by_layer(&mut self, added_nodes: Vec<usize>) {
         let session_key_id = self.tree.get_root().map(|node| node.key_id);
         let mut to_visit = HashMap::new();
@@ -472,7 +466,10 @@ impl Lkh {
         }
         self.update_keys_by_layer(added_nodes);
     }
-    pub fn remove_user(&mut self, user_id: &str) {
+}
+
+impl LogicalTree for Lkh {
+    fn remove_user(&mut self, user_id: &str) {
         let session_key_id = self
             .tree
             .get_root()
@@ -531,6 +528,135 @@ impl Lkh {
             _ => {
                 self.update_keys(merged_node, &mut HashSet::new());
             }
+        }
+    }
+    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) {
+        let user = crate::user::User {
+            user_id: user_id.clone(),
+            send,
+        };
+        let node = Node {
+            id: 0,
+            key: self.generate_key(),
+            key_id: self.generate_key_id(),
+            user: Some(std::rc::Rc::new(user)),
+            depth: 0,
+        };
+        let new_id = self.tree.add_node(node);
+        self.update_keys(new_id, &mut HashSet::new());
+    }
+    fn get_session_key(&self) -> Option<(u64, &[u8])> {
+        self.tree
+            .get_root()
+            .and_then(|u| Some((u.key_id, u.key.as_slice())))
+    }
+}
+#[derive(Debug)]
+pub struct LKHPlus {
+    lkh: Lkh,
+    unordered_users: HashMap<String, User>,
+    max_unordered_count: usize,
+    temporary_key: Vec<u8>,
+    temporary_key_id: u64,
+}
+
+impl LogicalTree for LKHPlus {
+    fn get_session_key(&self) -> Option<(u64, &[u8])> {
+        if self.lkh.get_user_count() > 0 {
+            self.lkh.get_session_key()
+        } else if self.unordered_users.len() > 0 {
+            Some((self.temporary_key_id, self.temporary_key.as_slice()))
+        } else {
+            None
+        }
+    }
+
+    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) -> () {
+        let new_user = User {
+            user_id: user_id.clone(),
+            send,
+        };
+
+        if self.unordered_users.len() >= self.max_unordered_count {
+            self.unordered_users.insert(user_id, new_user);
+            self.lkh
+                .add_user_vec(self.unordered_users.drain().map(|u| u.1).collect());
+        } else {
+            //refresh the session key, add user to unordered users and give the session key to the new user
+            let new_key = self.lkh.generate_key();
+            let (root_key_id, old_key) = {
+                match self.lkh.tree.get_node_by_id_mut(1) {
+                    None => {
+                        let old_key = self.temporary_key.clone();
+                        self.temporary_key = new_key.clone();
+                        (self.temporary_key_id, old_key)
+                    }
+                    Some(root) => {
+                        let old_key = root.key.clone();
+                        root.key = new_key.clone();
+                        (root.key_id, old_key)
+                    }
+                }
+            };
+
+            let packet = KeyUpdatePacket {
+                new_key,
+                new_key_id: root_key_id,
+                is_session_key: true,
+                delete_new_key: false,
+            }
+            .to_bytes();
+
+            (self.lkh.send_group)(self.lkh.algorithm.wrap(&packet, &old_key, root_key_id));
+            (new_user.send)(packet);
+
+            self.unordered_users.insert(user_id, new_user);
+        }
+    }
+    fn remove_user(&mut self, user_id: &str) -> () {
+        let (key, key_id) = if self.unordered_users.contains_key(user_id) {
+            let user = self.unordered_users.remove(user_id);
+            if user.is_none() {
+                return;
+            }
+            let new_key = self.lkh.generate_key();
+
+            let root = self.lkh.tree.get_node_by_id_mut(1);
+            let key_id = match root {
+                None => {
+                    self.temporary_key = new_key.clone();
+
+                    self.temporary_key_id
+                }
+
+                Some(root) => {
+                    let key_id = root.key_id;
+                    root.key = new_key.clone();
+
+                    self.lkh.send_key_to_children(1);
+                    key_id
+                }
+                
+            };
+            (new_key,key_id)
+
+        } else {
+            self.lkh.remove_user(user_id);
+
+            
+
+            let (keyid, key) = self.get_session_key().expect("Unexpected key missing");
+            (key.to_vec(),keyid)
+        };
+        let packet = KeyUpdatePacket {
+            new_key: key.clone(),
+            new_key_id: key_id,
+            is_session_key: true,
+            delete_new_key: false,
+        }
+        .to_bytes();
+        for (user_id, user) in self.unordered_users.iter() {
+            (user.send)(packet.clone())
         }
     }
 }
@@ -924,8 +1050,9 @@ mod tests {
             let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
             assert!(users.borrow().check_session_key(rootkeyid));
             println!("{:?}", lkh);
+            println!("{:?}", users);
         }
-        println!("{:?}", users);
+
         let rootkeyid = lkh.tree.get_root().expect("No root").key_id;
         assert!(users.borrow().check_session_key(rootkeyid));
         assert!(verify_key_chain(&lkh, &*users.borrow()));
@@ -1336,5 +1463,343 @@ mod tests {
         assert!(users.borrow().check_session_key(rootkeyid));
         assert!(verify_key_chain(&lkh, &*users.borrow()));
         assert!(lkh.tree.verify_integrity());
+    }
+
+    #[test]
+    fn test_adding_one_user_realist_lkhplus() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        let mut lkhp = LKHPlus {
+            unordered_users: HashMap::new(),
+            max_unordered_count: 32,
+            temporary_key: lkh.generate_key(),
+            temporary_key_id: lkh.generate_key_id(),
+            lkh: lkh,
+        };
+
+        let user_id = users.borrow_mut().new_user();
+        let unicast_user = users.clone();
+        let unicast_user_id = unicast_user
+            .borrow_mut()
+            .get_user(user_id)
+            .expect("invalid id")
+            .user_id
+            .clone();
+        users.borrow_mut().add_user_to_tree(user_id);
+        lkhp.add_user(
+            unicast_user_id,
+            Box::new(move |data| {
+                unicast_user
+                    .borrow_mut()
+                    .get_user(user_id)
+                    .expect("invalid id")
+                    .receive_single(data)
+            }),
+        );
+
+        println!("{:?}", lkhp);
+        println!("{:?}", users);
+        assert!(verify_key_chain(&lkhp.lkh, &*users.borrow()));
+    }
+    #[test]
+    fn test_adding_three_user_realist_lkhplus() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        let mut lkhp = LKHPlus {
+            unordered_users: HashMap::new(),
+            max_unordered_count: 32,
+            temporary_key: lkh.generate_key(),
+            temporary_key_id: lkh.generate_key_id(),
+            lkh: lkh,
+        };
+        for _ in 0..3 {
+            let user_id = users.borrow_mut().new_user();
+            let unicast_user = users.clone();
+            let unicast_user_id = unicast_user
+                .borrow_mut()
+                .get_user(user_id)
+                .expect("invalid id")
+                .user_id
+                .clone();
+            users.borrow_mut().add_user_to_tree(user_id);
+            lkhp.add_user(
+                unicast_user_id,
+                Box::new(move |data| {
+                    unicast_user
+                        .borrow_mut()
+                        .get_user(user_id)
+                        .expect("invalid id")
+                        .receive_single(data)
+                }),
+            );
+            let rootkeyid = lkhp.get_session_key().expect("No session key").0;
+            assert!(users.borrow().check_session_key(rootkeyid));
+            println!("{:?}", lkhp);
+            println!("{:?}", users);
+        }
+
+        let rootkeyid = lkhp.get_session_key().expect("No session key").0;
+        assert!(users.borrow().check_session_key(rootkeyid));
+        assert!(verify_key_chain(&lkhp.lkh, &*users.borrow()));
+    }
+
+    #[test]
+    fn test_adding_32_user_realist_lkhplus() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        let mut lkhp = LKHPlus {
+            unordered_users: HashMap::new(),
+            max_unordered_count: 32,
+            temporary_key: lkh.generate_key(),
+            temporary_key_id: lkh.generate_key_id(),
+            lkh: lkh,
+        };
+        for _ in 0..32 {
+            let user_id = users.borrow_mut().new_user();
+            let unicast_user = users.clone();
+            let unicast_user_id = unicast_user
+                .borrow_mut()
+                .get_user(user_id)
+                .expect("invalid id")
+                .user_id
+                .clone();
+            users.borrow_mut().add_user_to_tree(user_id);
+            lkhp.add_user(
+                unicast_user_id,
+                Box::new(move |data| {
+                    unicast_user
+                        .borrow_mut()
+                        .get_user(user_id)
+                        .expect("invalid id")
+                        .receive_single(data)
+                }),
+            );
+            let rootkeyid = lkhp.get_session_key().expect("No session key").0;
+            assert!(users.borrow().check_session_key(rootkeyid));
+            println!("{:?}", lkhp);
+        }
+        println!("{:?}", users);
+        let rootkeyid = lkhp.get_session_key().expect("No session key").0;
+        assert!(users.borrow().check_session_key(rootkeyid));
+        assert!(verify_key_chain(&lkhp.lkh, &*users.borrow()));
+
+        lkhp.lkh.tree.to_dot();
+    }
+    #[test]
+    fn test_remove_user_lkhplus() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        let mut lkhp = LKHPlus {
+            unordered_users: HashMap::new(),
+            max_unordered_count: 32,
+            temporary_key: lkh.generate_key(),
+            temporary_key_id: lkh.generate_key_id(),
+            lkh: lkh,
+        };
+        for _ in 0..3 {
+            let user_id = users.borrow_mut().new_user();
+            let unicast_user = users.clone();
+            let unicast_user_id = unicast_user
+                .borrow_mut()
+                .get_user(user_id)
+                .expect("invalid id")
+                .user_id
+                .clone();
+            users.borrow_mut().add_user_to_tree(user_id);
+            lkhp.add_user(
+                unicast_user_id,
+                Box::new(move |data| {
+                    unicast_user
+                        .borrow_mut()
+                        .get_user(user_id)
+                        .expect("invalid id")
+                        .receive_single(data)
+                }),
+            );
+        }
+        println!("{:?}", lkhp);
+        println!("{:?}", users);
+        lkhp.remove_user(&"User1".to_string());
+        let user_id = users
+            .borrow_mut()
+            .get_user_by_id(&"User1".to_string())
+            .unwrap();
+        users.borrow_mut().remove_user_from_tree(user_id);
+        println!("After removing User1");
+        println!("{:?}", lkhp);
+        println!("{:?}", users);
+        let rootkeyid = lkhp.get_session_key().expect("No session key").0;
+        assert!(users.borrow().check_session_key(rootkeyid));
+        assert!(verify_key_chain(&lkhp.lkh, &*users.borrow()));
+    }
+
+    #[test]
+    fn test_remove_all_user_lkhplus() {
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        let mut lkhp = LKHPlus {
+            unordered_users: HashMap::new(),
+            max_unordered_count: 32,
+            temporary_key: lkh.generate_key(),
+            temporary_key_id: lkh.generate_key_id(),
+            lkh: lkh,
+        };
+        for _ in 0..32 {
+            let user_id = users.borrow_mut().new_user();
+            let unicast_user = users.clone();
+            let unicast_user_id = unicast_user
+                .borrow_mut()
+                .get_user(user_id)
+                .expect("invalid id")
+                .user_id
+                .clone();
+            users.borrow_mut().add_user_to_tree(user_id);
+            lkhp.add_user(
+                unicast_user_id,
+                Box::new(move |data| {
+                    unicast_user
+                        .borrow_mut()
+                        .get_user(user_id)
+                        .expect("invalid id")
+                        .receive_single(data)
+                }),
+            );
+            let rootkeyid = lkhp.get_session_key().expect("No session key").0;
+            assert!(users.borrow().check_session_key(rootkeyid));
+            assert!(verify_key_chain(&lkhp.lkh, &*users.borrow()));
+        }
+        println!("{:?}", lkhp);
+        println!("{:?}", users);
+        for i in 0..32 {
+            lkhp.remove_user(&format!("User{}", i));
+            let user_id = users
+                .borrow_mut()
+                .get_user_by_id(&format!("User{}", i))
+                .unwrap();
+            users.borrow_mut().remove_user_from_tree(user_id);
+            if lkhp.lkh.get_user_count() > 0 {
+                println!("Users count : {}", lkhp.lkh.get_user_count());
+                let rootkeyid = lkhp.get_session_key().expect("No session key").0;
+                assert!(users.borrow().check_session_key(rootkeyid));
+            }
+        }
+        assert!(verify_key_chain(&lkhp.lkh, &*users.borrow()));
+        println!("After removing all users");
+        println!("{:?}", lkhp);
+        println!("{:?}", users);
+    }
+    #[test]
+    fn random_test_lkhplus() {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+        let tree = Tree::new();
+        let users = Rc::new(RefCell::new(TreeTestUser { users: Vec::new() })); //Full gemini
+        let users_lkh = users.clone();
+        let n = 32;
+        let mut lkh = Lkh {
+            tree: tree,
+            algorithm: Algorithm::AesGcm256,
+            send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
+        };
+        let mut lkhp = LKHPlus {
+            unordered_users: HashMap::new(),
+            max_unordered_count: 32,
+            temporary_key: lkh.generate_key(),
+            temporary_key_id: lkh.generate_key_id(),
+            lkh: lkh,
+        };
+        for _ in 0..n {
+            users.borrow_mut().new_user();
+        }
+        //let mut actions = Vec::new();
+        for i in 0..100000 {
+            if (i % 1000 == 0) {
+                //println!("{}", i);
+                //users.borrow().print_users_in_tree();
+            }
+
+            //println!("Actions : {:?}", actions);
+            let user_id = rng.random_range(0..n) as usize;
+            let user_in_vec = users
+                .borrow_mut()
+                .get_user_by_id(&format!("User{}", user_id).to_string())
+                .expect("User unexpectedly not in array");
+            let in_tree = users
+                .borrow_mut()
+                .get_user(user_in_vec)
+                .expect("Unexpectedly not in array")
+                .in_tree
+                .clone();
+            //println!("{:?}", lkh.tree.depth);
+            //println!("{}", lkh.tree);
+
+            if !in_tree {
+                //Add user
+                //println!("Adding User{}", user_id);
+                //actions.push(format!("Adding User{}", user_id));
+                let unicast_user = users.clone();
+                let unicast_user_id = unicast_user
+                    .borrow_mut()
+                    .get_user(user_id)
+                    .expect("invalid id")
+                    .user_id
+                    .clone();
+                users.borrow_mut().add_user_to_tree(user_id);
+                lkhp.add_user(
+                    unicast_user_id,
+                    Box::new(move |data| {
+                        unicast_user
+                            .borrow_mut()
+                            .get_user(user_id)
+                            .expect("invalid id")
+                            .receive_single(data)
+                    }),
+                );
+            } else {
+                //println!("Removing User{}", user_id);
+
+                //actions.push(format!("Removing User{}", user_id));
+                //Remove user
+                lkhp.remove_user(&format!("User{}", user_id));
+                users.borrow_mut().remove_user_from_tree(user_id);
+            }
+            users.borrow().print_users_in_tree();
+            if !(lkhp.lkh.tree.verify_integrity() && verify_key_chain(&lkhp.lkh, &*users.borrow()))
+            {
+                println!("{:?}", lkhp.lkh.tree.depth);
+                println!("{}", lkhp.lkh.tree);
+
+                panic!();
+            }
+        }
     }
 }

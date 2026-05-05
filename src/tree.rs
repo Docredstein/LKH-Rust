@@ -50,7 +50,11 @@ impl fmt::Display for Tree {
 
 impl Default for Tree {
     fn default() -> Self {
-        Self::new()
+        Tree {
+            depth: HashMap::new(),
+            users: HashMap::new(),
+            array: Vec::new(),
+        }
     }
 }
 
@@ -341,8 +345,11 @@ impl BinaryTree for Tree {
                     Some(user) => {
                         self.users.insert(user.user_id.clone(), 1);
                     }
-                }
-                self.array.push(Some(right_node));
+                }   
+                
+
+                self.array.resize(1, None);
+                self.array[0] = Some(right_node);
                 self.depth.insert(0, BTreeSet::from([1]));
                 1
             }
@@ -419,7 +426,7 @@ impl BinaryTree for Tree {
     }
 
     fn get_node_by_id_mut(&mut self, node_id: usize) -> Option<&mut Node> {
-        if (node_id - 1) > self.array.len() {
+        if (node_id) > self.array.len() {
             return None;
         }
 
