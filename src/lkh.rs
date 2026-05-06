@@ -583,7 +583,7 @@ impl LogicalTree for LKHPlus {
                 root.key = new_key.clone();
 
                 let packet = KeyUpdatePacket {
-                    new_key: new_key,
+                    new_key,
                     new_key_id: key_id,
                     is_session_key: true,
                     delete_new_key: false,
@@ -625,8 +625,8 @@ impl LogicalTree for LKHPlus {
                 delete_new_key: false,
             }
             .to_bytes();
-            if (root.user.is_some()) {
-                (root.user.as_ref().unwrap().send)(packet.clone());
+            if let Some(root_user) = &root.user  {
+                (root_user.send)(packet.clone());
             }
             self.lkh.send_key_to_children(1);
             for (_, user) in self.unordered_users.iter() {
