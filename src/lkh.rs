@@ -6,14 +6,18 @@ use openssl::rand::rand_bytes;
 use openssl::symm::{Cipher, decrypt_aead, encrypt_aead};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-
+//TODO: change the user_id to an int ? 
 pub trait LogicalTree {
+    ///Add a user designated by `user_id` and a fonction `send` that send a vec8 to the user.
     fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) -> ();
+    ///Remove a user designated by `user_id`
     fn remove_user(&mut self, user_id: &str) -> ();
+    ///Return a tuple `(key_id, key)` if possible
     fn get_session_key(&self) -> Option<(u64, &[u8])>;
 }
 
 #[derive(Debug, PartialEq, Eq)]
+// TODO: add a way to select the algorithm used
 enum Algorithm {
     AesGcm256,
 }
