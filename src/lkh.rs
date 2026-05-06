@@ -546,8 +546,7 @@ impl LogicalTree for Lkh {
         self.update_keys(new_id, &mut HashSet::new());
     }
     fn get_session_key(&self) -> Option<(u64, &[u8])> {
-        self.tree
-            .get_root().map(|u| (u.key_id, u.key.as_slice()))
+        self.tree.get_root().map(|u| (u.key_id, u.key.as_slice()))
     }
 }
 #[derive(Debug)]
@@ -555,107 +554,116 @@ pub struct LKHPlus {
     lkh: Lkh,
     unordered_users: HashMap<String, User>,
     max_unordered_count: usize,
-    temporary_key: Vec<u8>,
-    temporary_key_id: u64,
+}
+
+impl fmt::Display for LKHPlus {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "LKH+ :\n\tMax unordered users : {}\n\t unordered users {:?}\n\t tree : {:?}",
+            self.max_unordered_count, self.unordered_users, self.lkh
+        )
+    }
 }
 
 impl LogicalTree for LKHPlus {
     fn get_session_key(&self) -> Option<(u64, &[u8])> {
-        if self.lkh.get_user_count() > 0 {
-            self.lkh.get_session_key()
-        } else if !self.unordered_users.is_empty() {
-            Some((self.temporary_key_id, self.temporary_key.as_slice()))
-        } else {
-            None
-        }
+        self.lkh.get_session_key()
     }
 
     fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) {
-        let new_user = User {
-            user_id: user_id.clone(),
-            send,
-        };
-
-        if self.unordered_users.len() >= self.max_unordered_count {
-            self.unordered_users.insert(user_id, new_user);
-            self.lkh
-                .add_user_vec(self.unordered_users.drain().map(|u| u.1).collect());
+        if self.lkh.get_user_count() == 0 {
+            self.lkh.add_user(user_id, send);
         } else {
-            //refresh the session key, add user to unordered users and give the session key to the new user
             let new_key = self.lkh.generate_key();
-            let (root_key_id, old_key) = {
-                match self.lkh.tree.get_node_by_id_mut(1) {
-                    None => {
-                        let old_key = self.temporary_key.clone();
-                        self.temporary_key = new_key.clone();
-                        (self.temporary_key_id, old_key)
-                    }
-                    Some(root) => {
-                        let old_key = root.key.clone();
-                        root.key = new_key.clone();
-                        (root.key_id, old_key)
-                    }
+            if self.unordered_users.len() + 1 < self.max_unordered_count {
+                let root = self.lkh.tree.get_node_by_id_mut(1).expect("Missing root");
+                let old_key = root.key.clone();
+                let key_id = root.key_id;
+                root.key = new_key.clone();
+
+                let packet = KeyUpdatePacket {
+                    new_key: new_key,
+                    new_key_id: key_id,
+                    is_session_key: true,
+                    delete_new_key: false,
                 }
-            };
+                .to_bytes();
+
+                (self.lkh.send_group)(self.lkh.algorithm.wrap(&packet, &old_key, key_id));
+                (send)(packet);
+                let new_user = User {
+                    user_id: user_id.clone(),
+                    send,
+                };
+                self.unordered_users.insert(user_id, new_user);
+            } else {
+                let new_user = User {
+                    user_id: user_id.clone(),
+                    send,
+                };
+                self.unordered_users.insert(user_id, new_user);
+                self.lkh
+                    .add_user_vec(self.unordered_users.drain().map(|u| u.1).collect());
+            }
+        }
+    }
+    fn remove_user(&mut self, user_id: &str) {
+        if self.unordered_users.contains_key(user_id) {
+            let removed_user = self.unordered_users.remove(user_id).unwrap();
+            let new_key = self.lkh.generate_key();
+            let root = self.lkh.tree.get_node_by_id_mut(1).expect("missing root");
+
+            let old_key = root.key.clone();
+            let key_id = root.key_id;
+            root.key = new_key.clone();
 
             let packet = KeyUpdatePacket {
                 new_key,
-                new_key_id: root_key_id,
+                new_key_id: key_id,
                 is_session_key: true,
                 delete_new_key: false,
             }
             .to_bytes();
-
-            (self.lkh.send_group)(self.lkh.algorithm.wrap(&packet, &old_key, root_key_id));
-            (new_user.send)(packet);
-
-            self.unordered_users.insert(user_id, new_user);
-        }
-    }
-    fn remove_user(&mut self, user_id: &str) {
-        let (key, key_id) = if self.unordered_users.contains_key(user_id) {
-            let user = self.unordered_users.remove(user_id);
-            if user.is_none() {
-                return;
+            if (root.user.is_some()) {
+                (root.user.as_ref().unwrap().send)(packet.clone());
             }
-            let new_key = self.lkh.generate_key();
+            self.lkh.send_key_to_children(1);
+            for (_, user) in self.unordered_users.iter() {
+                (user.send)(packet.clone());
+            }
+            let remove_packet = KeyUpdatePacket {
+                new_key: old_key,
+                new_key_id: key_id,
+                is_session_key: true,
+                delete_new_key: true,
+            }
+            .to_bytes();
 
-            let root = self.lkh.tree.get_node_by_id_mut(1);
-            let key_id = match root {
-                None => {
-                    self.temporary_key = new_key.clone();
-
-                    self.temporary_key_id
-                }
-
-                Some(root) => {
-                    let key_id = root.key_id;
-                    root.key = new_key.clone();
-
-                    self.lkh.send_key_to_children(1);
-                    key_id
-                }
-                
-            };
-            (new_key,key_id)
-
+            (removed_user.send)(remove_packet);
         } else {
             self.lkh.remove_user(user_id);
 
-            
+            if self.lkh.get_user_count() == 0 {
+                //We need to change the root
+                self.lkh
+                    .add_user_vec(self.unordered_users.drain().map(|u| u.1).collect());
+            } else {
+                let root = self.lkh.tree.get_root().unwrap();
+                let key = root.key.clone();
+                let key_id = root.key_id;
+                let packet = KeyUpdatePacket {
+                    new_key: key,
+                    new_key_id: key_id,
+                    is_session_key: true,
+                    delete_new_key: false,
+                }
+                .to_bytes();
 
-            let (keyid, key) = self.get_session_key().expect("Unexpected key missing");
-            (key.to_vec(),keyid)
-        };
-        let packet = KeyUpdatePacket {
-            new_key: key.clone(),
-            new_key_id: key_id,
-            is_session_key: true,
-            delete_new_key: false,
-        }
-        .to_bytes();
-        for (_user_id, user) in self.unordered_users.iter() {
-            (user.send)(packet.clone())
+                for (_, user) in self.unordered_users.iter() {
+                    (user.send)(packet.clone())
+                }
+            }
         }
     }
 }
@@ -859,7 +867,7 @@ fn verify_key_chain(tree: &Lkh, users: &TreeTestUser) -> bool {
             let node = tree.tree.get_node_by_id(id);
             if node.is_none() {
                 println!("Cannot find node using this id {}", id);
-                return false; 
+                return false;
             }
             let node = node.unwrap();
             let key = &node.key;
@@ -870,7 +878,7 @@ fn verify_key_chain(tree: &Lkh, users: &TreeTestUser) -> bool {
             key_count += 1;
             node_id = tree.tree.get_parent(id).as_ref().map(|u| u.id);
         }
-        if key_count > keys.len()  {
+        if key_count > keys.len() {
             //If a key is repeated multiple time in the path to root
             return false;
         }
@@ -936,8 +944,12 @@ mod tests {
             Box::new(|data| println!("Recieved privately : {:x?}", data)),
         );
         println!("{:?}", lkh);
+        let key = lkh.tree.get_node_by_id(1).unwrap().key.clone();
+
         let mut already_updated = HashSet::from([1 as usize]);
         lkh.update_keys(1, &mut already_updated);
+        let after_key = lkh.tree.get_node_by_id(1).unwrap().key.clone();
+        assert_eq!(key, after_key)
     }
     #[test]
     fn test_add_one_user() {
@@ -1477,8 +1489,7 @@ mod tests {
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
             max_unordered_count: 32,
-            temporary_key: lkh.generate_key(),
-            temporary_key_id: lkh.generate_key_id(),
+
             lkh: lkh,
         };
 
@@ -1519,8 +1530,7 @@ mod tests {
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
             max_unordered_count: 32,
-            temporary_key: lkh.generate_key(),
-            temporary_key_id: lkh.generate_key_id(),
+
             lkh: lkh,
         };
         for _ in 0..3 {
@@ -1567,8 +1577,7 @@ mod tests {
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
             max_unordered_count: 32,
-            temporary_key: lkh.generate_key(),
-            temporary_key_id: lkh.generate_key_id(),
+
             lkh: lkh,
         };
         for _ in 0..32 {
@@ -1615,8 +1624,7 @@ mod tests {
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
             max_unordered_count: 32,
-            temporary_key: lkh.generate_key(),
-            temporary_key_id: lkh.generate_key_id(),
+
             lkh: lkh,
         };
         for _ in 0..3 {
@@ -1649,7 +1657,7 @@ mod tests {
             .unwrap();
         users.borrow_mut().remove_user_from_tree(user_id);
         println!("After removing User1");
-        println!("{:?}", lkhp);
+        println!("{}", lkhp);
         println!("{:?}", users);
         let rootkeyid = lkhp.get_session_key().expect("No session key").0;
         assert!(users.borrow().check_session_key(rootkeyid));
@@ -1669,8 +1677,7 @@ mod tests {
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
             max_unordered_count: 32,
-            temporary_key: lkh.generate_key(),
-            temporary_key_id: lkh.generate_key_id(),
+
             lkh: lkh,
         };
         for _ in 0..32 {
@@ -1732,8 +1739,7 @@ mod tests {
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
             max_unordered_count: 32,
-            temporary_key: lkh.generate_key(),
-            temporary_key_id: lkh.generate_key_id(),
+
             lkh: lkh,
         };
         for _ in 0..n {
