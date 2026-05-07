@@ -586,7 +586,7 @@ impl TestUser {
         }
 
         let (ksk, ksk_id, packet) = wrapped.unwrap();
-        if (!self.keys.contains_key(&ksk_id) || self.keys[&ksk_id] != ksk) {
+        if !self.keys.contains_key(&ksk_id) || self.keys[&ksk_id] != ksk  {
             //Shouldn't be able to decipher it
             return;
         }
