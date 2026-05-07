@@ -620,7 +620,7 @@ mod tests {
         for i in 0..4 {
             let user = User {
                 user_id: format!("user{}", i),
-                send: Box::new(|data| println!("Sending data: {:?}", data)),
+                send: Box::new(|data| ()),
             };
             let node = Node {
                 depth: 0,
@@ -641,7 +641,7 @@ mod tests {
         for i in 0..4 {
             let user = User {
                 user_id: format!("user{}", i),
-                send: Box::new(|data| println!("Sending data: {:?}", data)),
+                send: Box::new(|data| ()),
             };
             let node = Node {
                 depth: 0,

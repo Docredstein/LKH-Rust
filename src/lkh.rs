@@ -1,165 +1,35 @@
 use crate::node::Node;
+use crate::packet::{KeyUpdatePacket, WrappedKeyUpdatePacket};
 use crate::tree::{BinaryTree, Tree};
 use crate::user::User;
-
 use openssl::rand::rand_bytes;
-use openssl::symm::{Cipher, decrypt_aead, encrypt_aead};
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-//TODO: change the user_id to an int ? 
+//TODO: change the user_id to an int ?
 pub trait LogicalTree {
     ///Add a user designated by `user_id` and a fonction `send` that send a vec8 to the user.
-    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) -> ();
+    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(KeyUpdatePacket)>) -> ();
     ///Remove a user designated by `user_id`
     fn remove_user(&mut self, user_id: &str) -> ();
     ///Return a tuple `(key_id, key)` if possible
     fn get_session_key(&self) -> Option<(u64, &[u8])>;
 }
 
-#[derive(Debug, PartialEq, Eq)]
-// TODO: add a way to select the algorithm used
-enum Algorithm {
-    AesGcm256,
-}
-
-impl fmt::Display for Algorithm {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Algorithm::AesGcm256 => "AES-GCM-256",
-            }
-        )
-    }
-}
-
-struct KeyUpdatePacket {
-    new_key: Vec<u8>,
-    new_key_id: u64,
-    is_session_key: bool,
-    delete_new_key: bool,
-}
-
-impl KeyUpdatePacket {
-    fn to_bytes(&self) -> Vec<u8> {
-        let flags: u8 = (self.is_session_key as u8) | ((self.delete_new_key as u8) << 1);
-        let mut out = vec![flags];
-        out.extend_from_slice(self.new_key_id.to_be_bytes().as_ref());
-        out.extend_from_slice(&self.new_key.clone());
-        out
-    }
-
-    fn from_bytes(packet: Vec<u8>) -> Option<Self> {
-        if packet.len() < 10 {
-            None
-        } else {
-            let flags = packet[0];
-            let is_session_key = (flags & 1) == 1;
-            let delete_new_key = (flags & 2) == 2;
-
-            let key_id: [u8; 8] = packet[1..9].try_into().ok()?;
-
-            let id = u64::from_be_bytes(key_id);
-            let key = packet[9..].to_vec();
-
-            Some(KeyUpdatePacket {
-                is_session_key,
-                new_key: key,
-                delete_new_key,
-                new_key_id: id,
-            })
-        }
-    }
-}
-
-impl Algorithm {
-    fn key_size(&self) -> usize {
-        match self {
-            Algorithm::AesGcm256 => 32,
-        }
-    }
-    fn tag_size(&self) -> usize {
-        match self {
-            Algorithm::AesGcm256 => 16,
-        }
-    }
-    fn iv_size(&self) -> usize {
-        match self {
-            Algorithm::AesGcm256 => 32,
-        }
-    }
-    fn encrypt(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        match self {
-            Algorithm::AesGcm256 => {
-                let mut iv = [0_u8; 32];
-                rand_bytes(&mut iv).expect("Unable to generate random Bytes");
-                let mut tag = vec![0_u8; self.tag_size()];
-                match encrypt_aead(
-                    Cipher::aes_256_gcm(),
-                    key,
-                    Some(&iv),
-                    aad,
-                    plaintext,
-                    &mut tag,
-                ) {
-                    Ok(ciphertext) => (iv.to_vec(), tag, ciphertext),
-                    Err(e) => panic!("Encryption failed: {:?}", e),
-                }
-            }
-        }
-    }
-    fn decrypt(
-        &self,
-        key: &[u8],
-        iv: &[u8],
-        aad: &[u8],
-        ciphertext: &[u8],
-        tag: &[u8],
-    ) -> Option<Vec<u8>> {
-        match self {
-            Algorithm::AesGcm256 => {
-                decrypt_aead(Cipher::aes_256_gcm(), key, Some(iv), aad, ciphertext, tag).ok()
-            }
-        }
-    }
-    fn wrap(&self, data: &[u8], key: &[u8], key_id: u64) -> Vec<u8> {
-        let mut ksk_id = key_id.to_be_bytes().to_vec();
-
-        let (iv, tag, cipher) = self.encrypt(key, data, &ksk_id);
-        ksk_id.extend_from_slice(&iv);
-        ksk_id.extend_from_slice(&tag);
-        ksk_id.extend_from_slice(&cipher);
-        ksk_id
-    }
-    fn unwrap(&self, packet: &[u8], keys: &HashMap<u64, Vec<u8>>) -> Option<Vec<u8>> {
-        if packet.len() < (8 + self.iv_size() + self.tag_size()) {
-            None
-        } else {
-            let ksk_id_byte: [u8; 8] = packet[..8].try_into().ok()?;
-            let ksk_id = u64::from_be_bytes(ksk_id_byte);
-            let key = keys.get(&ksk_id)?;
-            let iv = &packet[8..8 + self.iv_size()];
-            let tag = &packet[8 + self.iv_size()..8 + self.iv_size() + self.tag_size()];
-            let cipher = &packet[8 + self.iv_size() + self.tag_size()..];
-            self.decrypt(key, iv, &ksk_id_byte, cipher, tag)
-        }
-    }
-}
 pub struct Lkh {
     tree: Tree,
     //users: HashMap<String, usize>, //Delegated to Tree
-    algorithm: Algorithm,
-    send_group: Box<dyn Fn(Vec<u8>)>,
+    key_size: usize,
+    send_group: Box<dyn Fn(WrappedKeyUpdatePacket)>,
 }
 
 impl std::fmt::Debug for Lkh {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "LKH Tree of {} users using [{}] : \n{}",
+            "LKH Tree of {} users using key of length [{}] : \n{}",
             self.tree.get_user_count(),
-            self.algorithm,
+            self.key_size,
             self.tree
         )
     }
@@ -176,7 +46,7 @@ impl Lkh {
         u64::from_be_bytes(key_id_bytes)
     }
     fn generate_key(&self) -> Vec<u8> {
-        let mut key = vec![0u8; self.algorithm.key_size()];
+        let mut key = vec![0u8; self.key_size];
         rand_bytes(&mut key).expect("Failed to generate random key");
         key
     }
@@ -284,8 +154,7 @@ impl Lkh {
             new_key_id: key_id,
             is_session_key: key_id == session_key_id,
             delete_new_key: false,
-        }
-        .to_bytes();
+        };
 
         match self.tree.get_left_child(node_id) {
             None => (),
@@ -299,7 +168,7 @@ impl Lkh {
                         node.id, ksk_id
                     );
                 }
-                let to_send = self.algorithm.wrap(&packet, ksk, ksk_id);
+                let to_send = packet.wrap(ksk.to_vec(), ksk_id);
                 (self.send_group)(to_send);
             }
         };
@@ -315,7 +184,7 @@ impl Lkh {
                         node.id, ksk_id
                     );
                 }
-                let to_send = self.algorithm.wrap(&packet, ksk, ksk_id);
+                let to_send = packet.wrap(ksk.to_vec(), ksk_id);
                 (self.send_group)(to_send);
             }
         };
@@ -356,7 +225,7 @@ impl Lkh {
                 .as_ref()
                 .expect("Trying to update the key of a non existing user")
                 .as_ref()
-                .send)(packet.to_bytes());
+                .send)(packet);
         }
     }
 
@@ -377,8 +246,7 @@ impl Lkh {
                     Some(id) => id == node.key_id,
                 },
                 delete_new_key: false,
-            }
-            .to_bytes();
+            };
 
             let user = node.user.as_ref().expect("Added node doesn't have a user");
             (user.send)(packet);
@@ -496,12 +364,9 @@ impl LogicalTree for Lkh {
             new_key_id: key_id_to_delete,
             delete_new_key: true,
             is_session_key: key_id_to_delete == session_key_id,
-        }
-        .to_bytes();
+        };
 
-        let to_send = self
-            .algorithm
-            .wrap(&packet, &key_to_delete, key_id_to_delete);
+        let to_send = packet.wrap(key_to_delete, key_id_to_delete);
         (self.send_group)(to_send);
 
         match self.tree.get_parent(node_id) {
@@ -515,12 +380,9 @@ impl LogicalTree for Lkh {
                     new_key_id: key_id_to_delete,
                     delete_new_key: true,
                     is_session_key: key_id_to_delete == session_key_id,
-                }
-                .to_bytes();
+                };
 
-                let to_send = self
-                    .algorithm
-                    .wrap(&packet, &key_to_delete, key_id_to_delete);
+                let to_send = packet.wrap(key_to_delete, key_id_to_delete);
                 (self.send_group)(to_send);
             }
         };
@@ -534,7 +396,7 @@ impl LogicalTree for Lkh {
             }
         }
     }
-    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) {
+    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(KeyUpdatePacket)>) {
         let user = crate::user::User {
             user_id: user_id.clone(),
             send,
@@ -575,7 +437,7 @@ impl LogicalTree for LKHPlus {
         self.lkh.get_session_key()
     }
 
-    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(Vec<u8>)>) {
+    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(KeyUpdatePacket)>) {
         if self.lkh.get_user_count() == 0 {
             self.lkh.add_user(user_id, send);
         } else {
@@ -591,10 +453,9 @@ impl LogicalTree for LKHPlus {
                     new_key_id: key_id,
                     is_session_key: true,
                     delete_new_key: false,
-                }
-                .to_bytes();
+                };
 
-                (self.lkh.send_group)(self.lkh.algorithm.wrap(&packet, &old_key, key_id));
+                (self.lkh.send_group)(packet.wrap(old_key, key_id));
                 (send)(packet);
                 let new_user = User {
                     user_id: user_id.clone(),
@@ -627,9 +488,8 @@ impl LogicalTree for LKHPlus {
                 new_key_id: key_id,
                 is_session_key: true,
                 delete_new_key: false,
-            }
-            .to_bytes();
-            if let Some(root_user) = &root.user  {
+            };
+            if let Some(root_user) = &root.user {
                 (root_user.send)(packet.clone());
             }
             self.lkh.send_key_to_children(1);
@@ -641,8 +501,7 @@ impl LogicalTree for LKHPlus {
                 new_key_id: key_id,
                 is_session_key: true,
                 delete_new_key: true,
-            }
-            .to_bytes();
+            };
 
             (removed_user.send)(remove_packet);
         } else {
@@ -661,8 +520,7 @@ impl LogicalTree for LKHPlus {
                     new_key_id: key_id,
                     is_session_key: true,
                     delete_new_key: false,
-                }
-                .to_bytes();
+                };
 
                 for (_, user) in self.unordered_users.iter() {
                     (user.send)(packet.clone())
@@ -676,7 +534,7 @@ impl LogicalTree for LKHPlus {
 struct TestUser {
     user_id: String,
     keys: HashMap<u64, Vec<u8>>,
-    algorithm: Algorithm,
+    key_len: usize,
     session_key_id: Option<u64>,
     in_tree: bool,
 }
@@ -697,39 +555,28 @@ impl fmt::Debug for TestUser {
 }
 
 impl TestUser {
-    fn receive_single(&mut self, data: Vec<u8>) {
-        let packet = KeyUpdatePacket::from_bytes(data);
-        match packet {
-            None => {
-                #[cfg(feature = "debug")]
-                {
-                    println!("User {} received an invalid packet", self.user_id);
-                }
+    fn receive_single(&mut self, packet: KeyUpdatePacket) {
+        if packet.delete_new_key {
+            self.keys.remove(&packet.new_key_id);
+            if packet.is_session_key {
+                self.session_key_id = None;
             }
-            Some(packet) => {
-                if packet.delete_new_key {
-                    self.keys.remove(&packet.new_key_id);
-                    if packet.is_session_key {
-                        self.session_key_id = None;
-                    }
-                } else {
-                    #[cfg(feature = "debug")]
-                    {
-                        println!(
-                            "User {} updated key {} with new key {:?}",
-                            self.user_id, packet.new_key_id, packet.new_key
-                        );
-                    }
-                    self.keys.insert(packet.new_key_id, packet.new_key);
-                    if packet.is_session_key {
-                        self.session_key_id = Some(packet.new_key_id);
-                    }
-                }
+        } else {
+            #[cfg(feature = "debug")]
+            {
+                println!(
+                    "User {} updated key {} with new key {:?}",
+                    self.user_id, packet.new_key_id, packet.new_key
+                );
+            }
+            self.keys.insert(packet.new_key_id, packet.new_key);
+            if packet.is_session_key {
+                self.session_key_id = Some(packet.new_key_id);
             }
         }
     }
 
-    fn receive_group(&mut self, data: Vec<u8>) {
+    fn receive_group(&mut self, wrapped: WrappedKeyUpdatePacket) {
         //data : ksk_id,iv,tag,cipher
         #[cfg(feature = "debug")]
         {
@@ -738,45 +585,35 @@ impl TestUser {
             println!("Availables keys: {:?}", self.keys);
         }
 
-        let packet = self.algorithm.unwrap(&data, &self.keys);
-        if packet.is_none() {
+        let (ksk, ksk_id, packet) = wrapped.unwrap();
+        if (!self.keys.contains_key(&ksk_id) || self.keys[&ksk_id] != ksk) {
+            //Shouldn't be able to decipher it
             return;
         }
 
-        let key_update = KeyUpdatePacket::from_bytes(packet.unwrap());
-        match key_update {
-            None => {
-                #[cfg(feature = "debug")]
-                {
-                    println!("GROUP : User {} received an invalid packet", self.user_id);
-                }
+        if packet.delete_new_key {
+            self.keys.remove(&packet.new_key_id);
+            if self.session_key_id == Some(packet.new_key_id) {
+                self.session_key_id = None;
             }
-            Some(packet) => {
-                if packet.delete_new_key {
-                    self.keys.remove(&packet.new_key_id);
-                    if self.session_key_id == Some(packet.new_key_id) {
-                        self.session_key_id = None;
-                    }
-                    #[cfg(feature = "debug")]
-                    {
-                        println!(
-                            "GROUP : User {} deleted key {}",
-                            self.user_id, packet.new_key_id
-                        );
-                    }
-                } else {
-                    self.keys.insert(packet.new_key_id, packet.new_key);
-                    if packet.is_session_key {
-                        self.session_key_id = Some(packet.new_key_id);
-                    }
-                    #[cfg(feature = "debug")]
-                    {
-                        println!(
-                            "GROUP : User {} updated key {} with new key {}",
-                            self.user_id, packet.new_key_id, packet.new_key_id
-                        );
-                    }
-                }
+            #[cfg(feature = "debug")]
+            {
+                println!(
+                    "GROUP : User {} deleted key {}",
+                    self.user_id, packet.new_key_id
+                );
+            }
+        } else {
+            self.keys.insert(packet.new_key_id, packet.new_key);
+            if packet.is_session_key {
+                self.session_key_id = Some(packet.new_key_id);
+            }
+            #[cfg(feature = "debug")]
+            {
+                println!(
+                    "GROUP : User {} updated key {} with new key {}",
+                    self.user_id, packet.new_key_id, packet.new_key_id
+                );
             }
         }
     }
@@ -827,20 +664,20 @@ impl TreeTestUser {
         let test_user = TestUser {
             user_id,
             keys,
-            algorithm: Algorithm::AesGcm256,
+            key_len: 32,
             session_key_id: None,
             in_tree: false,
         };
         self.users.push(test_user);
         self.users.len() - 1
     }
-    fn receive_group(&mut self, data: Vec<u8>) {
+    fn receive_group(&mut self, wrapped: WrappedKeyUpdatePacket) {
         #[cfg(feature = "debug")]
         {
             println!("received group data : {:x?}", data);
         }
         for i in self.users.iter_mut() {
-            i.receive_group(data.clone());
+            i.receive_group(wrapped.clone());
         }
     }
     fn add_user_to_tree(&mut self, id: usize) {
@@ -903,42 +740,18 @@ mod tests {
         let tree = Tree::new();
         let lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(|data| println!("Sending group data: {:?}", data)),
         };
         println!("{:?}", lkh);
     }
-    #[test]
-    fn test_encrypt() {
-        let a = Algorithm::AesGcm256;
-        let key = vec![0; a.key_size()];
-        let plaintext = b"Hello, World!";
-        let aad = b"Additional Data";
-        let (iv, tag, ciphertext) = a.encrypt(&key, plaintext, aad);
-        println!("IV: {:x?}", iv);
-        println!("Tag: {:x?}", tag);
-        println!("Ciphertext: {:x?}", ciphertext);
-    }
-    #[test]
-    fn test_encrypt_decrypt() {
-        let a = Algorithm::AesGcm256;
-        let key = vec![0; a.key_size()];
-        let plaintext = b"Hello, World!";
-        let aad = b"Additional Data";
-        let (iv, tag, ciphertext) = a.encrypt(&key, plaintext, aad);
-        let decrypted = a
-            .decrypt(&key, &iv, aad, &ciphertext, &tag)
-            .expect("Unable to decrypt");
-        assert_eq!(plaintext.to_vec(), decrypted);
-        println!("Original : {:x?}", plaintext);
-        println!("Decrypted: {:x?}", decrypted);
-    }
+    
     #[test]
     fn test_update_on_already_updated_node() {
         let tree = Tree::new();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(|data| println!("recieved group data: {:x?}", data)),
         };
         println!("{:?}", lkh);
@@ -960,7 +773,7 @@ mod tests {
         let tree = Tree::new();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(|data| println!("recieved group data: {:x?}", data)),
         };
         println!("{:?}", lkh);
@@ -976,7 +789,7 @@ mod tests {
         let tree = Tree::new();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(|data| println!("Sending group data: {:?}", data)),
         };
         println!("{:?}", lkh);
@@ -1004,7 +817,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
 
@@ -1039,7 +852,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         for _ in 0..3 {
@@ -1080,7 +893,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         for _ in 0..32 {
@@ -1122,7 +935,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         for _ in 0..3 {
@@ -1169,7 +982,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         for _ in 0..3 {
@@ -1225,7 +1038,7 @@ mod tests {
         let n = 32;
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         for _ in 0..n {
@@ -1300,7 +1113,7 @@ mod tests {
         let n = 32;
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         for _ in 0..n {
@@ -1359,7 +1172,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         let mut users_vec = Vec::new();
@@ -1405,7 +1218,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         let mut users_vec = Vec::new();
@@ -1487,7 +1300,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         let mut lkhp = LKHPlus {
@@ -1528,7 +1341,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         let mut lkhp = LKHPlus {
@@ -1575,7 +1388,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         let mut lkhp = LKHPlus {
@@ -1622,7 +1435,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         let mut lkhp = LKHPlus {
@@ -1675,7 +1488,7 @@ mod tests {
         let users_lkh = users.clone();
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         let mut lkhp = LKHPlus {
@@ -1737,7 +1550,7 @@ mod tests {
         let n = 32;
         let mut lkh = Lkh {
             tree: tree,
-            algorithm: Algorithm::AesGcm256,
+            key_size:32,
             send_group: Box::new(move |data| users_lkh.borrow_mut().receive_group(data)),
         };
         let mut lkhp = LKHPlus {

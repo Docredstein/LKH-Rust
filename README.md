@@ -6,9 +6,9 @@
 This projet aim to implement a simple LKH implementation specifically for use in multicast trees. 
 
 ## Interface : 
-- a function ```send_group(data:&[u8]) -> ()``` that send data to the multicast tree
+- a function ```send_group(wrapped: WrappedKeyUpdatePacket) -> ()``` that send the packet encrypted using the ksk to the multicast tree
 - for each recipient
-    - a function `send_unique(data:&[u8]) -> ()` that send data to the specific user **It is assumed that this communication is encrypted**
+    - a function `send_unique(packet : KeyUpdatePacket) -> ()` that send data to the specific user **It is assumed that this communication is encrypted** (for example using TLS over unicast)
     - a hashable id unique to the user
 
 ## Packet used : 
