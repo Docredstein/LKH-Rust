@@ -479,7 +479,9 @@ impl BinaryTree for Tree {
 
 #[cfg(test)]
 mod tests {
-    use crate::user::User;
+    use std::sync::Arc;
+
+use crate::user::User;
 
     use super::*;
 
@@ -627,7 +629,7 @@ mod tests {
                 id: 5,
                 key: vec![1; 8],
                 key_id: i,
-                user: Some(std::rc::Rc::new(user)),
+                user: Some(Arc::new(user)),
             };
             a.add_node(node);
             println!("{}", a);
@@ -648,7 +650,7 @@ mod tests {
                 id: 5,
                 key: vec![1; 8],
                 key_id: i,
-                user: Some(std::rc::Rc::new(user)),
+                user: Some(Arc::new(user)),
             };
             a.add_node(node);
         }
