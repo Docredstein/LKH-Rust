@@ -12,14 +12,13 @@ use std::sync::Arc;
 
 pub trait LogicalTree {
     ///Add a user designated by `user_id` and a fonction `send` that send a vec8 to the user.
-    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>)
+    fn add_user(&mut self, user_id: Vec<u8>, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>)
     -> ();
     ///Remove a user designated by `user_id`
-    fn remove_user(&mut self, user_id: &str) -> ();
+    fn remove_user(&mut self, user_id: Vec<u8>) -> ();
     ///Return a tuple `(key_id, key)` if possible
     fn get_session_key(&self) -> Option<(u64, &[u8])>;
 }
-
 
 #[derive(Clone)]
 pub struct Lkh {
@@ -27,7 +26,6 @@ pub struct Lkh {
     //users: HashMap<String, usize>, //Delegated to Tree
     key_size: usize,
     send_group: Arc<Box<dyn Fn(WrappedKeyUpdatePacket) + Send + Sync>>,
-    
 }
 
 impl std::fmt::Debug for Lkh {
@@ -308,7 +306,7 @@ impl Lkh {
     pub fn add_user_vec(&mut self, users: Vec<User>) {
         let _already_updated: HashSet<usize> = HashSet::new();
         //Update in 2 steps, add everyone in the tree then update the keys by starting with the deepest one.
-        let user_ids: Vec<String> = users.iter().map(|u| u.user_id.clone()).collect();
+        let user_ids: Vec<Vec<u8>> = users.iter().map(|u| u.user_id.clone()).collect();
 
         for user in users {
             let node = Node {
@@ -337,7 +335,7 @@ impl Lkh {
         for user_id in user_ids {
             let node_id = self
                 .tree
-                .get_user_node(&user_id)
+                .get_user_node(user_id)
                 .expect("Node wasn't successfully inserted");
             added_nodes.push(*node_id);
         }
@@ -351,7 +349,7 @@ impl Lkh {
 }
 
 impl LogicalTree for Lkh {
-    fn remove_user(&mut self, user_id: &str) {
+    fn remove_user(&mut self, user_id: Vec<u8>) {
         let session_key_id = self
             .tree
             .get_root()
@@ -406,7 +404,7 @@ impl LogicalTree for Lkh {
             }
         }
     }
-    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>) {
+    fn add_user(&mut self, user_id: Vec<u8>, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>) {
         let user = crate::user::User {
             user_id: user_id.clone(),
             send,
@@ -428,7 +426,7 @@ impl LogicalTree for Lkh {
 #[derive(Debug)]
 pub struct LKHPlus {
     lkh: Lkh,
-    unordered_users: HashMap<String, User>,
+    unordered_users: HashMap<Vec<u8>, User>,
     max_unordered_count: usize,
 }
 
@@ -447,7 +445,7 @@ impl LogicalTree for LKHPlus {
         self.lkh.get_session_key()
     }
 
-    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>) {
+    fn add_user(&mut self, user_id: Vec<u8>, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>) {
         if self.lkh.get_user_count() == 0 {
             self.lkh.add_user(user_id, send);
         } else {
@@ -483,9 +481,9 @@ impl LogicalTree for LKHPlus {
             }
         }
     }
-    fn remove_user(&mut self, user_id: &str) {
-        if self.unordered_users.contains_key(user_id) {
-            let removed_user = self.unordered_users.remove(user_id).unwrap();
+    fn remove_user(&mut self, user_id: Vec<u8>) {
+        if self.unordered_users.contains_key(&user_id) {
+            let removed_user = self.unordered_users.remove(&user_id).unwrap();
             let new_key = self.lkh.generate_key();
             let root = self.lkh.tree.get_node_by_id_mut(1).expect("missing root");
 
@@ -542,7 +540,7 @@ impl LogicalTree for LKHPlus {
 
 //-------------------------------------TEST-------------------------------------------------
 struct TestUser {
-    user_id: String,
+    user_id: Vec<u8>,
     keys: HashMap<u64, Vec<u8>>,
     key_len: usize,
     session_key_id: Option<u64>,
@@ -551,7 +549,7 @@ struct TestUser {
 
 impl fmt::Debug for TestUser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TestUser [{}] : ", self.user_id).ok();
+        write!(f, "TestUser [{:?}] : ", self.user_id).ok();
         for (key_id, key) in self.keys.iter() {
             write!(f, "\n\t").ok();
             if self.session_key_id.is_some() && self.session_key_id.unwrap() == *key_id {
@@ -647,7 +645,7 @@ impl TreeTestUser {
     fn get_user(&mut self, id: usize) -> Option<&mut TestUser> {
         self.users.get_mut(id)
     }
-    fn get_user_by_id(&mut self, user_id: &str) -> Option<usize> {
+    fn get_user_by_id(&mut self, user_id: Vec<u8>) -> Option<usize> {
         self.users.iter().position(|u| u.user_id == user_id)
     }
     fn check_session_key(&self, session_key_id: u64) -> bool {
@@ -660,7 +658,7 @@ impl TreeTestUser {
         })
     }
     fn print_users_in_tree(&self) {
-        let ids: Vec<String> = self
+        let ids: Vec<Vec<u8>> = self
             .users
             .iter()
             .filter(|u| u.in_tree)
@@ -669,7 +667,7 @@ impl TreeTestUser {
         println!("Users in tree : {:?}", ids,);
     }
     fn new_user(&mut self) -> usize {
-        let user_id = format!("User{}", self.users.len());
+        let user_id = self.users.len().to_be_bytes().to_vec();
         let keys = HashMap::new();
         let test_user = TestUser {
             user_id,
@@ -708,7 +706,7 @@ fn verify_key_chain(tree: &Lkh, users: &TreeTestUser) -> bool {
         let user_id = user.user_id.clone();
         let keys = &user.keys;
         let mut key_count = 0;
-        let mut node_id = tree.tree.get_user_node(&user_id).copied();
+        let mut node_id = tree.tree.get_user_node(user_id).copied();
 
         loop {
             if node_id.is_none() {
@@ -752,7 +750,6 @@ mod tests {
             tree: tree,
             key_size: 32,
             send_group: Arc::new(Box::new(|data| println!("Sending group data: {:?}", data))),
-            
         };
         println!("{:?}", lkh);
     }
@@ -763,13 +760,14 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(|data| println!("recieved group data: {:x?}", data))),
-            
+            send_group: Arc::new(Box::new(|data| {
+                println!("recieved group data: {:x?}", data)
+            })),
         };
         println!("{:?}", lkh);
 
         lkh.add_user(
-            "User0".to_string(),
+            vec!(0),
             Box::new(|data| println!("Recieved privately : {:x?}", data)),
         );
         println!("{:?}", lkh);
@@ -786,13 +784,14 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(|data| println!("recieved group data: {:x?}", data))),
-            
+            send_group: Arc::new(Box::new(|data| {
+                println!("recieved group data: {:x?}", data)
+            })),
         };
         println!("{:?}", lkh);
 
         lkh.add_user(
-            "User0".to_string(),
+            vec!(0),
             Box::new(|data| println!("Recieved privately : {:x?}", data)),
         );
         println!("{:?}", lkh);
@@ -803,22 +802,22 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(|data| println!("Sending group data: {:?}", data))),            
+            send_group: Arc::new(Box::new(|data| println!("Sending group data: {:?}", data))),
         };
         println!("{:?}", lkh);
 
         lkh.add_user(
-            "User0".to_string(),
+            vec!(0),
             Box::new(|data| println!("0 Recieved privately : {:?}", data)),
         );
         println!("{:?}", lkh);
         lkh.add_user(
-            "User1".to_string(),
+            vec!(1),
             Box::new(|data| println!("1 Recieved privately : {:?}", data)),
         );
         println!("{:?}", lkh);
         lkh.add_user(
-            "User2".to_string(),
+            vec!(2),
             Box::new(|data| println!("2 Recieved privately : {:?}", data)),
         );
         println!("{:?}", lkh);
@@ -831,8 +830,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
 
         let user_id = users.lock().unwrap().new_user();
@@ -869,8 +869,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         for _ in 0..3 {
             let user_id = users.lock().unwrap().new_user();
@@ -913,8 +914,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         for _ in 0..32 {
             let user_id = users.lock().unwrap().new_user();
@@ -958,8 +960,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         for _ in 0..3 {
             let user_id = users.lock().unwrap().new_user();
@@ -986,11 +989,11 @@ mod tests {
         }
         println!("{:?}", lkh);
         println!("{:?}", users);
-        lkh.remove_user(&"User1".to_string());
+        lkh.remove_user((0 as u64).to_be_bytes().to_vec());
         let user_id = users
             .lock()
             .unwrap()
-            .get_user_by_id(&"User1".to_string())
+            .get_user_by_id((0 as u64).to_be_bytes().to_vec())
             .unwrap();
         users.lock().unwrap().remove_user_from_tree(user_id);
         println!("After removing User1");
@@ -1009,8 +1012,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         for _ in 0..3 {
             let user_id = users.lock().unwrap().new_user();
@@ -1040,12 +1044,12 @@ mod tests {
         }
         println!("{:?}", lkh);
         println!("{:?}", users);
-        for i in 0..3 {
-            lkh.remove_user(&format!("User{}", i));
+        for i in 0..3  as u64{
+            lkh.remove_user(i.to_be_bytes().to_vec());
             let user_id = users
                 .lock()
                 .unwrap()
-                .get_user_by_id(&format!("User{}", i))
+                .get_user_by_id(i.to_be_bytes().to_vec())
                 .unwrap();
             users.lock().unwrap().remove_user_from_tree(user_id);
             if lkh.get_user_count() > 0 {
@@ -1069,8 +1073,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         for _ in 0..n {
             users.lock().unwrap().new_user();
@@ -1087,7 +1092,7 @@ mod tests {
             let user_in_vec = users
                 .lock()
                 .unwrap()
-                .get_user_by_id(&format!("User{}", user_id).to_string())
+                .get_user_by_id(user_id.to_be_bytes().to_vec())
                 .expect("User unexpectedly not in array");
             let in_tree = users
                 .lock()
@@ -1128,7 +1133,7 @@ mod tests {
 
                 //actions.push(format!("Removing User{}", user_id));
                 //Remove user
-                lkh.remove_user(&format!("User{}", user_id));
+                lkh.remove_user(user_id.to_be_bytes().to_vec());
                 users.lock().unwrap().remove_user_from_tree(user_id);
             }
             users.lock().unwrap().print_users_in_tree();
@@ -1149,8 +1154,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         for _ in 0..n {
             users.lock().unwrap().new_user();
@@ -1164,7 +1170,7 @@ mod tests {
             let user_in_vec = users
                 .lock()
                 .unwrap()
-                .get_user_by_id(&format!("User{}", user_id).to_string())
+                .get_user_by_id(user_id.to_be_bytes().to_vec())
                 .expect("User unexpectedly not in array");
             let in_tree = users
                 .lock()
@@ -1199,7 +1205,7 @@ mod tests {
                 );
             } else {
                 //Remove user
-                lkh.remove_user(&format!("User{}", user_id));
+                lkh.remove_user(user_id.to_be_bytes().to_vec());
                 users.lock().unwrap().remove_user_from_tree(user_id);
             }
         }
@@ -1213,8 +1219,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         let mut users_vec = Vec::new();
         let mut user_id_vec = Vec::new();
@@ -1262,8 +1269,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         let mut users_vec = Vec::new();
         let mut user_id_vec = Vec::new();
@@ -1349,8 +1357,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1393,8 +1402,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1443,8 +1453,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1493,8 +1504,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1527,11 +1539,11 @@ mod tests {
         }
         println!("{:?}", lkhp);
         println!("{:?}", users);
-        lkhp.remove_user(&"User1".to_string());
+        lkhp.remove_user((1 as u64).to_be_bytes().to_vec());
         let user_id = users
             .lock()
             .unwrap()
-            .get_user_by_id(&"User1".to_string())
+            .get_user_by_id((1 as u64).to_be_bytes().to_vec())
             .unwrap();
         users.lock().unwrap().remove_user_from_tree(user_id);
         println!("After removing User1");
@@ -1550,8 +1562,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1587,12 +1600,12 @@ mod tests {
         }
         println!("{:?}", lkhp);
         println!("{:?}", users);
-        for i in 0..32 {
-            lkhp.remove_user(&format!("User{}", i));
+        for i in 0..32 as u64 {
+            lkhp.remove_user(i.to_be_bytes().to_vec());
             let user_id = users
                 .lock()
                 .unwrap()
-                .get_user_by_id(&format!("User{}", i))
+                .get_user_by_id(i.to_be_bytes().to_vec())
                 .unwrap();
             users.lock().unwrap().remove_user_from_tree(user_id);
             if lkhp.lkh.get_user_count() > 0 {
@@ -1616,8 +1629,9 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
-            
+            send_group: Arc::new(Box::new(move |data| {
+                users_lkh.lock().unwrap().receive_group(data)
+            })),
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1640,7 +1654,7 @@ mod tests {
             let user_in_vec = users
                 .lock()
                 .unwrap()
-                .get_user_by_id(&format!("User{}", user_id).to_string())
+                .get_user_by_id(user_id.to_be_bytes().to_vec())
                 .expect("User unexpectedly not in array");
             let in_tree = users
                 .lock()
@@ -1681,7 +1695,7 @@ mod tests {
 
                 //actions.push(format!("Removing User{}", user_id));
                 //Remove user
-                lkhp.remove_user(&format!("User{}", user_id));
+                lkhp.remove_user(user_id.to_be_bytes().to_vec());
                 users.lock().unwrap().remove_user_from_tree(user_id);
             }
             users.lock().unwrap().print_users_in_tree();

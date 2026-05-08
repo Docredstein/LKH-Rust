@@ -21,7 +21,7 @@ pub trait BinaryTree {
     fn get_node_by_id_mut(&mut self, node_id: usize) -> Option<&mut Node>;
     fn get_node_by_id(&self, node_id: usize) -> Option<&Node>;
     fn get_root(&self) -> Option<&Node>;
-    fn get_user_node(&self, user_id: &str) -> Option<&usize>;
+    fn get_user_node(&self, user_id: Vec<u8>) -> Option<&usize>;
     fn get_user_count(&self) -> usize;
     fn verify_integrity(&self) -> bool;
 }
@@ -31,7 +31,7 @@ pub struct Tree {
     //root: Option<Node>,
     //nodes: HashMap<u64, &'a Node>, //Association between nodeID and node
     pub depth: HashMap<u64, BTreeSet<usize>>, //Association between depth (0 being root) and the set of leaves at that depth
-    users: HashMap<String, usize>, //Association between userID and node, not ideal, should be in LKH
+    users: HashMap<Vec<u8>, usize>, //Association between userID and node, not ideal, should be in LKH
     array: Vec<Option<Node>>,
 }
 //Gemini
@@ -391,7 +391,7 @@ impl BinaryTree for Tree {
         match &node_to_delete.user {
             None => {}
             Some(user) => {
-                self.users.remove(user.user_id.as_str());
+                self.users.remove(&user.user_id);
             }
         }
         match &brother.user {
@@ -472,8 +472,8 @@ impl BinaryTree for Tree {
         }
     }
 
-    fn get_user_node(&self, user_id: &str) -> Option<&usize> {
-        self.users.get(user_id)
+    fn get_user_node(&self, user_id: Vec<u8>) -> Option<&usize> {
+        self.users.get(&user_id)
     }
 }
 
@@ -619,9 +619,9 @@ use crate::user::User;
     fn test_with_users() {
         let mut a = Tree::new();
 
-        for i in 0..4 {
+        for i in 0..4  as u64{
             let user = User {
-                user_id: format!("user{}", i),
+                user_id: i.to_be_bytes().to_vec(),
                 send: Box::new(|data| ()),
             };
             let node = Node {
@@ -640,9 +640,9 @@ use crate::user::User;
     fn test_move_up_subtree() {
         let mut a = Tree::new();
 
-        for i in 0..4 {
+        for i in 0..4 as u64 {
             let user = User {
-                user_id: format!("user{}", i),
+                user_id: i.to_be_bytes().to_vec(),
                 send: Box::new(|data| ()),
             };
             let node = Node {
