@@ -10,30 +10,25 @@ use std::fmt;
 use std::sync::Arc;
 //TODO: change the user_id to an int ?
 
-
-
-
-
-
 pub trait LogicalTree {
     ///Add a user designated by `user_id` and a fonction `send` that send a vec8 to the user.
-    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>) -> ();
+    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>)
+    -> ();
     ///Remove a user designated by `user_id`
     fn remove_user(&mut self, user_id: &str) -> ();
     ///Return a tuple `(key_id, key)` if possible
     fn get_session_key(&self) -> Option<(u64, &[u8])>;
 }
 
+
+#[derive(Clone)]
 pub struct Lkh {
     tree: Tree,
     //users: HashMap<String, usize>, //Delegated to Tree
     key_size: usize,
-    send_group: Box<dyn Fn(WrappedKeyUpdatePacket) + Send + Sync>,
-    rng: StdRng,
+    send_group: Arc<Box<dyn Fn(WrappedKeyUpdatePacket) + Send + Sync>>,
     
 }
-
-
 
 impl std::fmt::Debug for Lkh {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -54,14 +49,15 @@ impl Lkh {
     fn generate_key_id(&mut self) -> u64 {
         // Generate a unique key ID (for simplicity, using a random number here)
 
-
         //rand_bytes(&mut key_id_bytes).expect("Failed to generate random key ID");
         //u64::from_be_bytes(key_id_bytes)
-        self.rng.random::<u64>()
+        let mut rng = StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng");
+        rng.random::<u64>()
     }
     fn generate_key(&mut self) -> Vec<u8> {
         let mut key = vec![0u8; self.key_size];
-        self.rng.fill(&mut key);
+        let mut rng = StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng");
+        rng.fill(&mut key);
         key
     }
 
@@ -410,7 +406,7 @@ impl LogicalTree for Lkh {
             }
         }
     }
-    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(KeyUpdatePacket) +Send+ Sync>) {
+    fn add_user(&mut self, user_id: String, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>) {
         let user = crate::user::User {
             user_id: user_id.clone(),
             send,
@@ -755,8 +751,8 @@ mod tests {
         let lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(|data| println!("Sending group data: {:?}", data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(|data| println!("Sending group data: {:?}", data))),
+            
         };
         println!("{:?}", lkh);
     }
@@ -767,8 +763,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(|data| println!("recieved group data: {:x?}", data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(|data| println!("recieved group data: {:x?}", data))),
+            
         };
         println!("{:?}", lkh);
 
@@ -790,8 +786,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(|data| println!("recieved group data: {:x?}", data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(|data| println!("recieved group data: {:x?}", data))),
+            
         };
         println!("{:?}", lkh);
 
@@ -807,8 +803,7 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(|data| println!("Sending group data: {:?}", data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(|data| println!("Sending group data: {:?}", data))),            
         };
         println!("{:?}", lkh);
 
@@ -836,14 +831,15 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng"),
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
 
         let user_id = users.lock().unwrap().new_user();
         let unicast_user = users.clone();
         let unicast_user_id = unicast_user
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .get_user(user_id)
             .expect("invalid id")
             .user_id
@@ -853,7 +849,8 @@ mod tests {
             unicast_user_id,
             Box::new(move |data| {
                 unicast_user
-                    .lock().unwrap()
+                    .lock()
+                    .unwrap()
                     .get_user(user_id)
                     .expect("invalid id")
                     .receive_single(data)
@@ -872,14 +869,15 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         for _ in 0..3 {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
@@ -889,7 +887,8 @@ mod tests {
                 unicast_user_id,
                 Box::new(move |data| {
                     unicast_user
-                        .lock().unwrap()
+                        .lock()
+                        .unwrap()
                         .get_user(user_id)
                         .expect("invalid id")
                         .receive_single(data)
@@ -914,14 +913,15 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         for _ in 0..32 {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
@@ -931,7 +931,8 @@ mod tests {
                 unicast_user_id,
                 Box::new(move |data| {
                     unicast_user
-                        .lock().unwrap()
+                        .lock()
+                        .unwrap()
                         .get_user(user_id)
                         .expect("invalid id")
                         .receive_single(data)
@@ -957,14 +958,15 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         for _ in 0..3 {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
@@ -974,7 +976,8 @@ mod tests {
                 unicast_user_id,
                 Box::new(move |data| {
                     unicast_user
-                        .lock().unwrap()
+                        .lock()
+                        .unwrap()
                         .get_user(user_id)
                         .expect("invalid id")
                         .receive_single(data)
@@ -985,7 +988,8 @@ mod tests {
         println!("{:?}", users);
         lkh.remove_user(&"User1".to_string());
         let user_id = users
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .get_user_by_id(&"User1".to_string())
             .unwrap();
         users.lock().unwrap().remove_user_from_tree(user_id);
@@ -1005,14 +1009,15 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         for _ in 0..3 {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
@@ -1022,7 +1027,8 @@ mod tests {
                 unicast_user_id,
                 Box::new(move |data| {
                     unicast_user
-                        .lock().unwrap()
+                        .lock()
+                        .unwrap()
                         .get_user(user_id)
                         .expect("invalid id")
                         .receive_single(data)
@@ -1037,7 +1043,8 @@ mod tests {
         for i in 0..3 {
             lkh.remove_user(&format!("User{}", i));
             let user_id = users
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user_by_id(&format!("User{}", i))
                 .unwrap();
             users.lock().unwrap().remove_user_from_tree(user_id);
@@ -1062,8 +1069,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         for _ in 0..n {
             users.lock().unwrap().new_user();
@@ -1078,11 +1085,13 @@ mod tests {
             //println!("Actions : {:?}", actions);
             let user_id = rng.random_range(0..n) as usize;
             let user_in_vec = users
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user_by_id(&format!("User{}", user_id).to_string())
                 .expect("User unexpectedly not in array");
             let in_tree = users
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_in_vec)
                 .expect("Unexpectedly not in array")
                 .in_tree
@@ -1096,7 +1105,8 @@ mod tests {
                 //actions.push(format!("Adding User{}", user_id));
                 let unicast_user = users.clone();
                 let unicast_user_id = unicast_user
-                    .lock().unwrap()
+                    .lock()
+                    .unwrap()
                     .get_user(user_id)
                     .expect("invalid id")
                     .user_id
@@ -1106,7 +1116,8 @@ mod tests {
                     unicast_user_id,
                     Box::new(move |data| {
                         unicast_user
-                            .lock().unwrap()
+                            .lock()
+                            .unwrap()
                             .get_user(user_id)
                             .expect("invalid id")
                             .receive_single(data)
@@ -1138,8 +1149,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         for _ in 0..n {
             users.lock().unwrap().new_user();
@@ -1151,11 +1162,13 @@ mod tests {
             }
             let user_id = (rand::random::<u64>() % n) as usize;
             let user_in_vec = users
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user_by_id(&format!("User{}", user_id).to_string())
                 .expect("User unexpectedly not in array");
             let in_tree = users
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_in_vec)
                 .expect("Unexpectedly not in array")
                 .in_tree
@@ -1166,7 +1179,8 @@ mod tests {
 
                 let unicast_user = users.clone();
                 let unicast_user_id = unicast_user
-                    .lock().unwrap()
+                    .lock()
+                    .unwrap()
                     .get_user(user_id)
                     .expect("invalid id")
                     .user_id
@@ -1176,7 +1190,8 @@ mod tests {
                     unicast_user_id,
                     Box::new(move |data| {
                         unicast_user
-                            .lock().unwrap()
+                            .lock()
+                            .unwrap()
                             .get_user(user_id)
                             .expect("invalid id")
                             .receive_single(data)
@@ -1198,8 +1213,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         let mut users_vec = Vec::new();
         let mut user_id_vec = Vec::new();
@@ -1207,14 +1222,16 @@ mod tests {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
                 .clone();
             let func = Box::new(move |data| {
                 unicast_user
-                    .lock().unwrap()
+                    .lock()
+                    .unwrap()
                     .get_user(user_id)
                     .expect("invalid id")
                     .receive_single(data)
@@ -1245,8 +1262,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         let mut users_vec = Vec::new();
         let mut user_id_vec = Vec::new();
@@ -1254,14 +1271,16 @@ mod tests {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
                 .clone();
             let func = Box::new(move |data| {
                 unicast_user
-                    .lock().unwrap()
+                    .lock()
+                    .unwrap()
                     .get_user(user_id)
                     .expect("invalid id")
                     .receive_single(data)
@@ -1290,14 +1309,16 @@ mod tests {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
                 .clone();
             let func = Box::new(move |data| {
                 unicast_user
-                    .lock().unwrap()
+                    .lock()
+                    .unwrap()
                     .get_user(user_id)
                     .expect("invalid id")
                     .receive_single(data)
@@ -1328,8 +1349,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1341,7 +1362,8 @@ mod tests {
         let user_id = users.lock().unwrap().new_user();
         let unicast_user = users.clone();
         let unicast_user_id = unicast_user
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .get_user(user_id)
             .expect("invalid id")
             .user_id
@@ -1351,7 +1373,8 @@ mod tests {
             unicast_user_id,
             Box::new(move |data| {
                 unicast_user
-                    .lock().unwrap()
+                    .lock()
+                    .unwrap()
                     .get_user(user_id)
                     .expect("invalid id")
                     .receive_single(data)
@@ -1370,8 +1393,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1383,7 +1406,8 @@ mod tests {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
@@ -1393,7 +1417,8 @@ mod tests {
                 unicast_user_id,
                 Box::new(move |data| {
                     unicast_user
-                        .lock().unwrap()
+                        .lock()
+                        .unwrap()
                         .get_user(user_id)
                         .expect("invalid id")
                         .receive_single(data)
@@ -1418,8 +1443,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1431,7 +1456,8 @@ mod tests {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
@@ -1441,7 +1467,8 @@ mod tests {
                 unicast_user_id,
                 Box::new(move |data| {
                     unicast_user
-                        .lock().unwrap()
+                        .lock()
+                        .unwrap()
                         .get_user(user_id)
                         .expect("invalid id")
                         .receive_single(data)
@@ -1466,8 +1493,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1479,7 +1506,8 @@ mod tests {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
@@ -1489,7 +1517,8 @@ mod tests {
                 unicast_user_id,
                 Box::new(move |data| {
                     unicast_user
-                        .lock().unwrap()
+                        .lock()
+                        .unwrap()
                         .get_user(user_id)
                         .expect("invalid id")
                         .receive_single(data)
@@ -1500,7 +1529,8 @@ mod tests {
         println!("{:?}", users);
         lkhp.remove_user(&"User1".to_string());
         let user_id = users
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .get_user_by_id(&"User1".to_string())
             .unwrap();
         users.lock().unwrap().remove_user_from_tree(user_id);
@@ -1520,8 +1550,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1533,7 +1563,8 @@ mod tests {
             let user_id = users.lock().unwrap().new_user();
             let unicast_user = users.clone();
             let unicast_user_id = unicast_user
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_id)
                 .expect("invalid id")
                 .user_id
@@ -1543,7 +1574,8 @@ mod tests {
                 unicast_user_id,
                 Box::new(move |data| {
                     unicast_user
-                        .lock().unwrap()
+                        .lock()
+                        .unwrap()
                         .get_user(user_id)
                         .expect("invalid id")
                         .receive_single(data)
@@ -1558,7 +1590,8 @@ mod tests {
         for i in 0..32 {
             lkhp.remove_user(&format!("User{}", i));
             let user_id = users
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user_by_id(&format!("User{}", i))
                 .unwrap();
             users.lock().unwrap().remove_user_from_tree(user_id);
@@ -1583,8 +1616,8 @@ mod tests {
         let mut lkh = Lkh {
             tree: tree,
             key_size: 32,
-            send_group: Box::new(move |data| users_lkh.lock().unwrap().receive_group(data)),
-            rng: StdRng::try_from_rng(&mut SysRng).expect("Unable to seed rng")
+            send_group: Arc::new(Box::new(move |data| users_lkh.lock().unwrap().receive_group(data))),
+            
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
@@ -1605,11 +1638,13 @@ mod tests {
             //println!("Actions : {:?}", actions);
             let user_id = rng.random_range(0..n) as usize;
             let user_in_vec = users
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user_by_id(&format!("User{}", user_id).to_string())
                 .expect("User unexpectedly not in array");
             let in_tree = users
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .get_user(user_in_vec)
                 .expect("Unexpectedly not in array")
                 .in_tree
@@ -1623,7 +1658,8 @@ mod tests {
                 //actions.push(format!("Adding User{}", user_id));
                 let unicast_user = users.clone();
                 let unicast_user_id = unicast_user
-                    .lock().unwrap()
+                    .lock()
+                    .unwrap()
                     .get_user(user_id)
                     .expect("invalid id")
                     .user_id
@@ -1633,7 +1669,8 @@ mod tests {
                     unicast_user_id,
                     Box::new(move |data| {
                         unicast_user
-                            .lock().unwrap()
+                            .lock()
+                            .unwrap()
                             .get_user(user_id)
                             .expect("invalid id")
                             .receive_single(data)
@@ -1648,7 +1685,8 @@ mod tests {
                 users.lock().unwrap().remove_user_from_tree(user_id);
             }
             users.lock().unwrap().print_users_in_tree();
-            if !(lkhp.lkh.tree.verify_integrity() && verify_key_chain(&lkhp.lkh, &*users.lock().unwrap()))
+            if !(lkhp.lkh.tree.verify_integrity()
+                && verify_key_chain(&lkhp.lkh, &*users.lock().unwrap()))
             {
                 println!("{:?}", lkhp.lkh.tree.depth);
                 println!("{}", lkhp.lkh.tree);
