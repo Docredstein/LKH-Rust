@@ -1,7 +1,10 @@
 use openssl::symm::{Cipher, decrypt_aead, encrypt_aead};
-#[derive(Debug, PartialEq, Eq)]
+use std::fmt;
+use openssl::rand::rand_bytes;
+use std::collections::HashMap;
+#[derive(Debug, PartialEq, Eq,Clone,Copy)]
 // TODO: add a way to select the algorithm used
-enum Algorithm {
+pub enum Algorithm {
     AesGcm256,
 }
 
@@ -19,7 +22,7 @@ impl fmt::Display for Algorithm {
 
 
 impl Algorithm {
-    fn key_size(&self) -> usize {
+    pub fn key_len(&self) -> usize {
         match self {
             Algorithm::AesGcm256 => 32,
         }
@@ -95,11 +98,11 @@ impl Algorithm {
 
 #[cfg(test)]
 mod tests {
-
+use super::*;
 #[test]
     fn test_encrypt() {
         let a = Algorithm::AesGcm256;
-        let key = vec![0; a.key_size()];
+        let key = vec![0; a.key_len()];
         let plaintext = b"Hello, World!";
         let aad = b"Additional Data";
         let (iv, tag, ciphertext) = a.encrypt(&key, plaintext, aad);
@@ -110,7 +113,7 @@ mod tests {
     #[test]
     fn test_encrypt_decrypt() {
         let a = Algorithm::AesGcm256;
-        let key = vec![0; a.key_size()];
+        let key = vec![0; a.key_len()];
         let plaintext = b"Hello, World!";
         let aad = b"Additional Data";
         let (iv, tag, ciphertext) = a.encrypt(&key, plaintext, aad);
